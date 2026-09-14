@@ -11,9 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-download YOLO weights at build time so runtime starts cold-free
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
-COPY tagger.py .
-
 RUN useradd -u 1001 -m app
+COPY --chown=app:app tagger.py .
 USER app
 
 CMD ["python", "tagger.py"]

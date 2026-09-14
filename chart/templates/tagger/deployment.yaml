@@ -14,6 +14,8 @@ spec:
       labels:
         app: lolcatz-tagger
     spec:
+      imagePullSecrets:
+        - name: zot-pull-secret
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
