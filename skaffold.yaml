@@ -25,6 +25,21 @@ build:
       limits:
         cpu: "2"
         memory: "4Gi"
+    # Route upstream pulls through zot on-demand cache -- no Docker Hub rate limits
+    registryMirrors:
+      - host: docker.io
+        mirrors:
+          - zot.ee-lte-1.codemowers.io/docker.io
+      - host: ghcr.io
+        mirrors:
+          - zot.ee-lte-1.codemowers.io/ghcr.io
+      - host: quay.io
+        mirrors:
+          - zot.ee-lte-1.codemowers.io/quay.io
+      - host: gcr.io
+        mirrors:
+          - zot.ee-lte-1.codemowers.io/gcr.io
+
 
   artifacts:
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/uploader
