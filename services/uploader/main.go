@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -186,5 +185,3 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": id, "board": board})
 }
 
-// ensure io is imported
-var _ io.Reader

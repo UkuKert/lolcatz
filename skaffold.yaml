@@ -29,26 +29,32 @@ build:
       context: services/uploader
       kaniko:
         dockerfile: Dockerfile
+        skipPushPermissionCheck: true
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/browse
       context: services/browse
       kaniko:
         dockerfile: Dockerfile
+        skipPushPermissionCheck: true
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/search
       context: services/search
       kaniko:
         dockerfile: Dockerfile
+        skipPushPermissionCheck: true
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/comments
       context: services/comments
       kaniko:
         dockerfile: Dockerfile
+        skipPushPermissionCheck: true
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/tagger
       context: services/tagger
       kaniko:
         dockerfile: Dockerfile
+        skipPushPermissionCheck: true
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/frontend
       context: frontend
       kaniko:
         dockerfile: Dockerfile
+        skipPushPermissionCheck: true
 
 deploy:
   helm:
