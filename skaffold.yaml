@@ -3,39 +3,51 @@ kind: Config
 metadata:
   name: lolcatz-foobar
 
-# Builds run in-cluster via kaniko, pushing to zot (publicly reachable from laptop).
-# The zot-push-secret must be a dockerconfigjson secret in lolcatz-foobar namespace
-# with credentials for zot.ee-lte-1.codemowers.io.
 build:
+  # Builds run in-cluster via kaniko, pushing to zot.ee-lte-1.codemowers.io.
+  # Prerequisites:
+  #   kubectl create ns lolcatz-foobar
+  #   kubectl create secret docker-registry zot-push-secret -n lolcatz-foobar \
+  #     --docker-server=zot.ee-lte-1.codemowers.io \
+  #     --docker-username=<your-email> \
+  #     --docker-password=<zot-api-key>
   cluster:
-    pullSecretName: zot-push-secret
     namespace: lolcatz-foobar
+    serviceAccount: kaniko
     dockerConfig:
       secretName: zot-push-secret
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+
   artifacts:
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/uploader
       context: services/uploader
-      docker:
+      kaniko:
         dockerfile: Dockerfile
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/browse
       context: services/browse
-      docker:
+      kaniko:
         dockerfile: Dockerfile
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/search
       context: services/search
-      docker:
+      kaniko:
         dockerfile: Dockerfile
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/comments
       context: services/comments
-      docker:
+      kaniko:
         dockerfile: Dockerfile
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/tagger
       context: services/tagger
-      docker:
+      kaniko:
         dockerfile: Dockerfile
     - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/frontend
       context: frontend
-      docker:
+      kaniko:
         dockerfile: Dockerfile
 
 deploy:
