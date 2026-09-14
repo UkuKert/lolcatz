@@ -1,0 +1,23 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: lolcatz-database
+  namespace: lolcatz-foobar
+spec:
+  instances: 1
+  bootstrap:
+    initdb:
+      database: lolcatz
+      encoding: UTF8
+      localeCType: C
+      localeCollate: C
+      owner: lolcatz
+  storage:
+    size: 10Gi
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 1Gi
+      cpu: 1000m

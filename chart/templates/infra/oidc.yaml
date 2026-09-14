@@ -1,0 +1,23 @@
+apiVersion: codemowers.cloud/v1
+kind: OIDCClient
+metadata:
+  name: lolcatz-frontend
+  namespace: lolcatz-foobar
+spec:
+  displayName: Lolcatz
+  applicationType: web
+  grantTypes:
+    - authorization_code
+    - refresh_token
+  responseTypes:
+    - code
+  tokenEndpointAuthMethod: client_secret_basic
+  pkce: true
+  redirectUris:
+    - https://{{ .Values.domain }}/api/auth/callback
+  uri: https://{{ .Values.domain }}/
+  availableScopes:
+    - openid
+    - profile
+    - email
+    - groups

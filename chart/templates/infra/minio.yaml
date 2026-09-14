@@ -1,0 +1,49 @@
+apiVersion: s3.onyxia.sh/v1alpha1
+kind: Bucket
+metadata:
+  name: lolcatz-images
+  namespace: lolcatz-foobar
+spec:
+  name: lolcatz-images
+  quota:
+    default: 100000000000
+  s3InstanceRef: minio/default
+---
+apiVersion: s3.onyxia.sh/v1alpha1
+kind: Policy
+metadata:
+  name: lolcatz-images
+  namespace: lolcatz-foobar
+spec:
+  name: lolcatz-images
+  s3InstanceRef: minio/default
+  policyContent: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:ListBucket",
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject"
+          ],
+          "Resource": [
+            "arn:aws:s3:::lolcatz-images",
+            "arn:aws:s3:::lolcatz-images/*"
+          ]
+        }
+      ]
+    }
+---
+apiVersion: s3.onyxia.sh/v1alpha1
+kind: S3User
+metadata:
+  name: lolcatz-images
+  namespace: lolcatz-foobar
+spec:
+  accessKey: lolcatz-images
+  policies:
+    - lolcatz-images
+  s3InstanceRef: minio/default

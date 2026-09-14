@@ -1,0 +1,29 @@
+apiVersion: dragonflydb.io/v1alpha1
+kind: Dragonfly
+metadata:
+  name: lolcatz-redis
+  namespace: lolcatz-foobar
+spec:
+  replicas: 1
+  args:
+    - '--bind=::'
+    - '--admin_bind=::'
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lolcatz-redis
+  namespace: lolcatz-foobar
+spec:
+  selector:
+    app: lolcatz-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

@@ -1,0 +1,23 @@
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: lolcatz-images
+  namespace: redpanda
+spec:
+  partitions: 3
+  replicationFactor: 1
+  kafkaApiSpec:
+    brokers:
+      - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
+---
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: lolcatz-tags
+  namespace: redpanda
+spec:
+  partitions: 3
+  replicationFactor: 1
+  kafkaApiSpec:
+    brokers:
+      - redpanda-0.redpanda.redpanda.svc.cluster.local:9092

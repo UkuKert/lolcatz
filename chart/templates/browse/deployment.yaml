@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-browse
+  namespace: lolcatz-foobar
+spec:
+  replicas: 1
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: lolcatz-browse
+  template:
+    metadata:
+      labels:
+        app: lolcatz-browse
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: browse
+          image: {{ .Values.browse.image }}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: S3_PUBLIC_URL
+              value: http://minio.ee-lte-1.codemowers.io
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lolcatz-browse
+  namespace: lolcatz-foobar
+spec:
+  selector:
+    app: lolcatz-browse
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,68 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: lolcatz-foobar
+
+# Builds run in-cluster via kaniko, pushing to zot (publicly reachable from laptop).
+# The zot-push-secret must be a dockerconfigjson secret in lolcatz-foobar namespace
+# with credentials for zot.ee-lte-1.codemowers.io.
+build:
+  cluster:
+    pullSecretName: zot-push-secret
+    namespace: lolcatz-foobar
+    dockerConfig:
+      secretName: zot-push-secret
+  artifacts:
+    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/uploader
+      context: services/uploader
+      docker:
+        dockerfile: Dockerfile
+    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/browse
+      context: services/browse
+      docker:
+        dockerfile: Dockerfile
+    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/search
+      context: services/search
+      docker:
+        dockerfile: Dockerfile
+    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/comments
+      context: services/comments
+      docker:
+        dockerfile: Dockerfile
+    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/tagger
+      context: services/tagger
+      docker:
+        dockerfile: Dockerfile
+    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/frontend
+      context: frontend
+      docker:
+        dockerfile: Dockerfile
+
+deploy:
+  helm:
+    releases:
+      - name: lolcatz-foobar
+        chartPath: chart
+        valuesFiles:
+          - chart/values.yaml
+        setValueTemplates:
+          uploader.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/uploader:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_uploader}}"
+          browse.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/browse:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_browse}}"
+          search.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/search:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_search}}"
+          comments.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/comments:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_comments}}"
+          tagger.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/tagger:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_tagger}}"
+          frontend.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/frontend:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_frontend}}"
+        namespace: lolcatz-foobar
+        createNamespace: true
+
+portForward:
+  - resourceType: service
+    resourceName: lolcatz-frontend
+    namespace: lolcatz-foobar
+    port: 3000
+    localPort: 3000
+  - resourceType: service
+    resourceName: lolcatz-uploader
+    namespace: lolcatz-foobar
+    port: 8080
+    localPort: 8081

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-frontend
+  namespace: lolcatz-foobar
+spec:
+  replicas: 1
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      app: lolcatz-frontend
+  template:
+    metadata:
+      labels:
+        app: lolcatz-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: frontend
+          image: {{ .Values.frontend.image }}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: UPLOADER_URL
+              value: http://lolcatz-uploader:8080
+            - name: BROWSE_URL
+              value: http://lolcatz-browse:8080
+            - name: SEARCH_URL
+              value: http://lolcatz-search:8080
+            - name: COMMENTS_URL
+              value: http://lolcatz-comments:8080
+            # Minio is publicly accessible, served directly to the browser
+            - name: S3_PUBLIC_URL
+              value: http://minio.ee-lte-1.codemowers.io
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lolcatz-frontend
+  namespace: lolcatz-foobar
+spec:
+  selector:
+    app: lolcatz-frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lolcatz-frontend-tls
+  namespace: lolcatz-foobar
+spec:
+  secretName: lolcatz-frontend-tls
+  dnsNames:
+    - {{ .Values.domain }}
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lolcatz-frontend
+  namespace: lolcatz-foobar
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  rules:
+    - host: {{ .Values.domain }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: lolcatz-frontend
+                port:
+                  number: 3000
+  tls:
+    - secretName: lolcatz-frontend-tls
