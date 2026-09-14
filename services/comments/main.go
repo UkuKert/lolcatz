@@ -36,8 +36,7 @@ func getEnvOr(k, def string) string {
 func main() {
 	var err error
 
-	issuer := mustEnv("OIDC_ISSUER")
-	provider, err := gooidc.NewProvider(context.Background(), issuer)
+	provider, err := gooidc.NewProvider(context.Background(), mustEnv("OIDC_ISSUER"))
 	if err != nil {
 		log.Fatalf("oidc provider: %v", err)
 	}
@@ -53,7 +52,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /images/{id}/comments", requireAuth(handlePost))
-	mux.HandleFunc("DELETE /comments/{id}", requireAuth(handleDelete))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 
 	addr := ":" + getEnvOr("PORT", "8080")
@@ -63,29 +61,21 @@ func main() {
 
 func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
+		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if raw == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		rawToken := strings.TrimPrefix(authHeader, "Bearer ")
-		token, err := verifier.Verify(r.Context(), rawToken)
+		token, err := verifier.Verify(r.Context(), raw)
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var claims struct {
-			Email  string   `json:"email"`
-			Sub    string   `json:"sub"`
-			Groups []string `json:"groups"`
+			Email string `json:"email"`
 		}
-		if err := token.Claims(&claims); err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+		token.Claims(&claims)
 		r.Header.Set("X-User-Email", claims.Email)
-		r.Header.Set("X-User-Sub", claims.Sub)
-		r.Header.Set("X-User-Groups", strings.Join(claims.Groups, ","))
 		next(w, r)
 	}
 }
@@ -117,31 +107,4 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]any{"id": id})
-}
-
-func handleDelete(w http.ResponseWriter, r *http.Request) {
-	groups := r.Header.Get("X-User-Groups")
-	isAdmin := false
-	for _, g := range strings.Split(groups, ",") {
-		if strings.TrimSpace(g) == "admins" || strings.Contains(g, "codemowers:admins") {
-			isAdmin = true
-			break
-		}
-	}
-	if !isAdmin {
-		http.Error(w, "forbidden", 403)
-		return
-	}
-	id := r.PathValue("id")
-	res, err := db.ExecContext(r.Context(), `DELETE FROM comments WHERE id=$1`, id)
-	if err != nil {
-		http.Error(w, "db error", 500)
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		http.Error(w, "not found", 404)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

@@ -7,11 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
-	"strings"
 	"time"
 
-	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -23,18 +22,17 @@ var (
 	db          *sql.DB
 	minioClient *minio.Client
 	kafkaWriter *kafka.Writer
-	verifier    *gooidc.IDTokenVerifier
 	bucket      = mustEnv("S3_BUCKET")
+	s3PublicURL = mustEnv("S3_PUBLIC_URL")
 )
 
 type ImageEvent struct {
 	ID          string    `json:"id"`
 	Filename    string    `json:"filename"`
 	ContentType string    `json:"content_type"`
-	Size        int64     `json:"size"`
-	UploadedAt  time.Time `json:"uploaded_at"`
 	Board       string    `json:"board"`
 	Title       string    `json:"title"`
+	UploadedAt  time.Time `json:"uploaded_at"`
 }
 
 func mustEnv(k string) string {
@@ -54,14 +52,6 @@ func getEnvOr(k, def string) string {
 
 func main() {
 	var err error
-
-	// OIDC verifier — fetches JWKS from issuer
-	issuer := mustEnv("OIDC_ISSUER")
-	provider, err := gooidc.NewProvider(context.Background(), issuer)
-	if err != nil {
-		log.Fatalf("oidc provider: %v", err)
-	}
-	verifier = provider.Verifier(&gooidc.Config{SkipClientIDCheck: true})
 
 	db, err = sql.Open("postgres", mustEnv("DATABASE_URL"))
 	if err != nil {
@@ -83,65 +73,36 @@ func main() {
 	}
 
 	kafkaWriter = &kafka.Writer{
-		Addr:     kafka.TCP(mustEnv("KAFKA_BROKERS")),
+		Addr:     kafka.TCP(getEnvOr("KAFKA_BROKERS", "")),
 		Topic:    "lolcatz-images",
 		Balancer: &kafka.LeastBytes{},
 	}
 	defer kafkaWriter.Close()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /upload", requireAuth(handleUpload))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	// Step 1: browser asks for a presigned PUT URL
+	mux.HandleFunc("POST /presign", handlePresign)
+	// Step 2: browser calls this after uploading to minio to register the image
+	mux.HandleFunc("POST /confirm", handleConfirm)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 
 	addr := ":" + getEnvOr("PORT", "8080")
 	log.Printf("uploader listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
-// requireAuth validates the Bearer token from Authorization header.
-// Sets X-User-Email and X-User-Sub on the request context via header injection.
-func requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		rawToken := strings.TrimPrefix(authHeader, "Bearer ")
-		token, err := verifier.Verify(r.Context(), rawToken)
-		if err != nil {
-			log.Printf("token verify: %v", err)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var claims struct {
-			Email string `json:"email"`
-			Sub   string `json:"sub"`
-		}
-		if err := token.Claims(&claims); err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		r.Header.Set("X-User-Email", claims.Email)
-		r.Header.Set("X-User-Sub", claims.Sub)
-		next(w, r)
-	}
-}
-
 func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS images (
-			id          TEXT PRIMARY KEY,
-			board       TEXT NOT NULL DEFAULT 'b',
-			title       TEXT NOT NULL DEFAULT '',
-			filename    TEXT NOT NULL,
+			id           TEXT PRIMARY KEY,
+			board        TEXT NOT NULL DEFAULT 'b',
+			title        TEXT NOT NULL DEFAULT '',
+			filename     TEXT NOT NULL,
 			content_type TEXT NOT NULL,
-			size        BIGINT NOT NULL,
-			author      TEXT NOT NULL DEFAULT 'Anonymous',
-			tags        TEXT[] NOT NULL DEFAULT '{}',
-			uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			size         BIGINT NOT NULL DEFAULT 0,
+			author       TEXT NOT NULL DEFAULT 'Anonymous',
+			tags         TEXT[] NOT NULL DEFAULT '{}',
+			uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 		CREATE TABLE IF NOT EXISTS comments (
 			id         BIGSERIAL PRIMARY KEY,
@@ -157,75 +118,118 @@ func migrate(db *sql.DB) error {
 	return err
 }
 
-func handleUpload(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+func handlePresign(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+		Board       string `json:"board"`
+		Title       string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", 400)
 		return
 	}
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "missing file", http.StatusBadRequest)
-		return
+	allowed := map[string]bool{
+		"image/jpeg": true, "image/png": true,
+		"image/gif": true, "image/webp": true,
 	}
-	defer file.Close()
-
-	ct := header.Header.Get("Content-Type")
-	if ct != "image/jpeg" && ct != "image/png" && ct != "image/gif" && ct != "image/webp" {
+	if !allowed[req.ContentType] {
 		http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
 		return
 	}
+	if req.Board == "" {
+		req.Board = "b"
+	}
 
 	id := uuid.New().String()
-	board := r.FormValue("board")
-	if board == "" {
-		board = "b"
-	}
-	title := r.FormValue("title")
-	author := r.Header.Get("X-User-Email")
-	if author == "" {
-		author = "Anonymous"
-	}
-	objectKey := fmt.Sprintf("%s/%s", board, id)
+	objectKey := fmt.Sprintf("%s/%s", req.Board, id)
 
-	ctx := r.Context()
-	info, err := minioClient.PutObject(ctx, bucket, objectKey, file, header.Size, minio.PutObjectOptions{
-		ContentType: ct,
-	})
+	// Presigned PUT — browser uploads directly to minio
+	putURL, err := minioClient.PresignedPutObject(
+		r.Context(), bucket, objectKey, 15*time.Minute,
+	)
 	if err != nil {
-		log.Printf("minio put: %v", err)
-		http.Error(w, "storage error", http.StatusInternalServerError)
+		log.Printf("presign: %v", err)
+		http.Error(w, "presign error", 500)
 		return
 	}
 
-	_, err = db.ExecContext(ctx,
-		`INSERT INTO images (id, board, title, filename, content_type, size, author) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		id, board, title, header.Filename, ct, info.Size, author,
+	// Rewrite to public URL
+	publicPut := rewriteToPublic(putURL)
+	// Public GET URL (no signing needed — bucket is public)
+	publicGet := fmt.Sprintf("%s/%s/%s", s3PublicURL, bucket, objectKey)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"id":       id,
+		"put_url":  publicPut,
+		"get_url":  publicGet,
+		"board":    req.Board,
+		"title":    req.Title,
+		"filename": req.Filename,
+	})
+}
+
+func handleConfirm(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID          string `json:"id"`
+		Board       string `json:"board"`
+		Title       string `json:"title"`
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", 400)
+		return
+	}
+
+	objectKey := fmt.Sprintf("%s/%s", req.Board, req.ID)
+
+	// Verify object actually exists in minio
+	info, err := minioClient.StatObject(r.Context(), bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		log.Printf("stat object %s: %v", objectKey, err)
+		http.Error(w, "object not found in storage", 404)
+		return
+	}
+
+	_, err = db.ExecContext(r.Context(),
+		`INSERT INTO images (id, board, title, filename, content_type, size)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (id) DO NOTHING`,
+		req.ID, req.Board, req.Title, req.Filename, req.ContentType, info.Size,
 	)
 	if err != nil {
 		log.Printf("db insert: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		http.Error(w, "db error", 500)
 		return
 	}
 
 	event := ImageEvent{
-		ID:          id,
-		Filename:    header.Filename,
-		ContentType: ct,
-		Size:        info.Size,
-		UploadedAt:  time.Now(),
-		Board:       board,
-		Title:       title,
+		ID: req.ID, Filename: req.Filename, ContentType: req.ContentType,
+		Board: req.Board, Title: req.Title, UploadedAt: time.Now(),
 	}
 	payload, _ := json.Marshal(event)
-	if err := kafkaWriter.WriteMessages(context.Background(), kafka.Message{
-		Key:   []byte(id),
-		Value: payload,
-	}); err != nil {
-		log.Printf("kafka write (non-fatal): %v", err)
+	if kafkaWriter.Addr.String() != "" {
+		if err := kafkaWriter.WriteMessages(context.Background(), kafka.Message{
+			Key: []byte(req.ID), Value: payload,
+		}); err != nil {
+			log.Printf("kafka write (non-fatal): %v", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"id": id, "board": board})
+	json.NewEncoder(w).Encode(map[string]string{"id": req.ID})
+}
+
+func rewriteToPublic(u *url.URL) string {
+	pub, err := url.Parse(s3PublicURL)
+	if err != nil {
+		return u.String()
+	}
+	u.Scheme = pub.Scheme
+	u.Host = pub.Host
+	return u.String()
 }

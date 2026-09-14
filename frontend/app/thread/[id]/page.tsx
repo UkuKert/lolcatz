@@ -4,21 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useSession, signIn } from "next-auth/react";
 
-interface Comment {
-  id: number;
-  body: string;
-  author: string;
-  created_at: string;
-}
-
-interface Image {
-  id: string;
-  board: string;
-  title: string;
-  filename: string;
-  tags: string[];
-  uploaded_at: string;
-}
+interface Comment { id: number; body: string; author: string; created_at: string; }
+interface Image { id: string; board: string; title: string; filename: string; tags: string[]; uploaded_at: string; image_url: string; }
 
 export default function ThreadPage() {
   const { id } = useParams<{ id: string }>();
@@ -26,7 +13,6 @@ export default function ThreadPage() {
   const [image, setImage] = useState<Image | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [body, setBody] = useState("");
-  const s3Base = process.env.S3_PUBLIC_URL || "";
 
   const load = () =>
     fetch(`/api/browse/images/${id}`)
@@ -56,22 +42,15 @@ export default function ThreadPage() {
   return (
     <div>
       <div className="thread">
-        <img
-          src={`${s3Base}/lolcatz-images/${image.board}/${image.id}`}
-          alt={image.title || image.filename}
-        />
+        <img src={image.image_url} alt={image.title || image.filename} />
         <div>
           <strong style={{ color: "#0f0c5d" }}>{image.title || image.filename}</strong>
           {image.tags?.length > 0 && (
             <div className="tags" style={{ marginTop: 4 }}>
-              {image.tags.map(t => (
-                <a key={t} href={`/search?tag=${t}`} style={{ marginRight: 4 }}>[{t}]</a>
-              ))}
+              {image.tags.map(t => <a key={t} href={`/search?tag=${t}`} style={{ marginRight: 4 }}>[{t}]</a>)}
             </div>
           )}
-          <div style={{ color: "#666", fontSize: 11, marginTop: 4 }}>
-            {new Date(image.uploaded_at).toLocaleString()}
-          </div>
+          <div style={{ color: "#666", fontSize: 11, marginTop: 4 }}>{new Date(image.uploaded_at).toLocaleString()}</div>
         </div>
         <div style={{ clear: "both" }} />
       </div>
@@ -93,13 +72,11 @@ export default function ThreadPage() {
               Sign in to reply
             </button>
           )}
-          {status === "authenticated" && (
-            <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>
-              Replying as {session.user?.email}
-            </div>
-          )}
-          <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} required />
-          <button type="submit">Post Reply</button>
+          {status === "authenticated" && <>
+            <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>as {session.user?.email}</div>
+            <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} required />
+            <button type="submit">Post Reply</button>
+          </>}
         </div>
       </form>
     </div>
