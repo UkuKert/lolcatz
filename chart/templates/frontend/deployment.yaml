@@ -28,6 +28,8 @@ spec:
           env:
             - name: PORT
               value: "3000"
+            - name: HOSTNAME
+              value: "::"
             - name: UPLOADER_URL
               value: http://lolcatz-uploader:8080
             - name: BROWSE_URL
