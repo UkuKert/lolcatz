@@ -1,7 +1,6 @@
 *.o
 *.a
-browse
-comments
-search
-uploader
-tagger
+/browse/browse
+/comments/comments
+/search/search
+/uploader/uploader

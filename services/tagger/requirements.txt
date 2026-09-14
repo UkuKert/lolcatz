@@ -1,3 +1,7 @@
+# CPU-only torch — keeps the image ~500MB instead of 5GB with CUDA
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 ultralytics==8.3.52
 confluent-kafka==2.6.1
 psycopg2-binary==2.9.10
