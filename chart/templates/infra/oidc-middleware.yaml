@@ -1,0 +1,8 @@
+apiVersion: codemowers.cloud/v1
+kind: OIDCMiddlewareClient
+metadata:
+  name: lolcatz-auth
+  namespace: lolcatz-foobar
+spec:
+  displayName: Can I Haz Kubernetes
+  uri: https://{{ .Values.domain }}/

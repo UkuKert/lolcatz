@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { useSession, signIn } from "next-auth/react";
 
 interface Comment {
   id: number;
@@ -15,17 +16,16 @@ interface Image {
   board: string;
   title: string;
   filename: string;
-  content_type: string;
   tags: string[];
   uploaded_at: string;
 }
 
 export default function ThreadPage() {
   const { id } = useParams<{ id: string }>();
+  const { data: session, status } = useSession();
   const [image, setImage] = useState<Image | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [body, setBody] = useState("");
-  const [author, setAuthor] = useState("Anonymous");
   const s3Base = process.env.S3_PUBLIC_URL || "";
 
   const load = () =>
@@ -38,10 +38,14 @@ export default function ThreadPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (status !== "authenticated") { signIn("passmower"); return; }
     await fetch(`/api/comments/images/${id}/comments`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body, author }),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${(session as any).idToken}`,
+      },
+      body: JSON.stringify({ body }),
     });
     setBody("");
     load();
@@ -83,9 +87,17 @@ export default function ThreadPage() {
       <form onSubmit={submit} style={{ marginTop: 12, maxWidth: 400 }}>
         <div className="upload-form">
           <h2>Reply</h2>
-          <label>Name</label>
-          <input value={author} onChange={e => setAuthor(e.target.value)} />
-          <label>Comment</label>
+          {status === "unauthenticated" && (
+            <button type="button" onClick={() => signIn("passmower")}
+              style={{ background: "#34345c", color: "white", border: "none", padding: "4px 12px", cursor: "pointer", marginBottom: 8 }}>
+              Sign in to reply
+            </button>
+          )}
+          {status === "authenticated" && (
+            <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>
+              Replying as {session.user?.email}
+            </div>
+          )}
           <textarea value={body} onChange={e => setBody(e.target.value)} rows={4} required />
           <button type="submit">Post Reply</button>
         </div>

@@ -38,9 +38,27 @@ spec:
               value: http://lolcatz-search:8080
             - name: COMMENTS_URL
               value: http://lolcatz-comments:8080
-            # Minio is publicly accessible, served directly to the browser
             - name: S3_PUBLIC_URL
               value: http://minio.ee-lte-1.codemowers.io
+            - name: OIDC_ISSUER
+              value: https://auth.ee-lte-1.codemowers.io/
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ID
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_SECRET
+            - name: NEXTAUTH_URL
+              value: https://{{ .Values.domain }}
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-nextauth-secret
+                  key: secret
           resources:
             requests:
               memory: 128Mi
@@ -95,3 +113,15 @@ spec:
                   number: 3000
   tls:
     - secretName: lolcatz-frontend-tls
+---
+apiVersion: secretgenerator.mittwald.de/v1alpha1
+kind: StringSecret
+metadata:
+  name: lolcatz-nextauth-secret
+  namespace: lolcatz-foobar
+spec:
+  forceRegenerate: false
+  fields:
+    - fieldName: secret
+      encoding: hex
+      length: "32"

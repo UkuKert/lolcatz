@@ -8,8 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -21,6 +23,7 @@ var (
 	db          *sql.DB
 	minioClient *minio.Client
 	kafkaWriter *kafka.Writer
+	verifier    *gooidc.IDTokenVerifier
 	bucket      = mustEnv("S3_BUCKET")
 )
 
@@ -42,8 +45,23 @@ func mustEnv(k string) string {
 	return v
 }
 
+func getEnvOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
 func main() {
 	var err error
+
+	// OIDC verifier — fetches JWKS from issuer
+	issuer := mustEnv("OIDC_ISSUER")
+	provider, err := gooidc.NewProvider(context.Background(), issuer)
+	if err != nil {
+		log.Fatalf("oidc provider: %v", err)
+	}
+	verifier = provider.Verifier(&gooidc.Config{SkipClientIDCheck: true})
 
 	db, err = sql.Open("postgres", mustEnv("DATABASE_URL"))
 	if err != nil {
@@ -72,7 +90,7 @@ func main() {
 	defer kafkaWriter.Close()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /upload", handleUpload)
+	mux.HandleFunc("POST /upload", requireAuth(handleUpload))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -82,11 +100,34 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
-func getEnvOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+// requireAuth validates the Bearer token from Authorization header.
+// Sets X-User-Email and X-User-Sub on the request context via header injection.
+func requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		rawToken := strings.TrimPrefix(authHeader, "Bearer ")
+		token, err := verifier.Verify(r.Context(), rawToken)
+		if err != nil {
+			log.Printf("token verify: %v", err)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var claims struct {
+			Email string `json:"email"`
+			Sub   string `json:"sub"`
+		}
+		if err := token.Claims(&claims); err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		r.Header.Set("X-User-Email", claims.Email)
+		r.Header.Set("X-User-Sub", claims.Sub)
+		next(w, r)
 	}
-	return def
 }
 
 func migrate(db *sql.DB) error {
@@ -98,6 +139,7 @@ func migrate(db *sql.DB) error {
 			filename    TEXT NOT NULL,
 			content_type TEXT NOT NULL,
 			size        BIGINT NOT NULL,
+			author      TEXT NOT NULL DEFAULT 'Anonymous',
 			tags        TEXT[] NOT NULL DEFAULT '{}',
 			uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
@@ -140,6 +182,10 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		board = "b"
 	}
 	title := r.FormValue("title")
+	author := r.Header.Get("X-User-Email")
+	if author == "" {
+		author = "Anonymous"
+	}
 	objectKey := fmt.Sprintf("%s/%s", board, id)
 
 	ctx := r.Context()
@@ -153,8 +199,8 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO images (id, board, title, filename, content_type, size) VALUES ($1,$2,$3,$4,$5,$6)`,
-		id, board, title, header.Filename, ct, info.Size,
+		`INSERT INTO images (id, board, title, filename, content_type, size, author) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		id, board, title, header.Filename, ct, info.Size, author,
 	)
 	if err != nil {
 		log.Printf("db insert: %v", err)
@@ -176,12 +222,10 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		Key:   []byte(id),
 		Value: payload,
 	}); err != nil {
-		log.Printf("kafka write: %v", err)
-		// non-fatal — image is already stored
+		log.Printf("kafka write (non-fatal): %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"id": id, "board": board})
 }
-

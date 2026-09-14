@@ -31,6 +31,8 @@ spec:
                 secretKeyRef:
                   name: lolcatz-database-app
                   key: uri
+            - name: OIDC_ISSUER
+              value: https://auth.ee-lte-1.codemowers.io/
           resources:
             requests:
               memory: 64Mi

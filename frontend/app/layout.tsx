@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   title: "Can I Haz Kubernetes",
@@ -37,6 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         `}</style>
       </head>
       <body>
+        <Providers>
         <header>
           <h1>🐱 Can I Haz Kubernetes</h1>
           <nav>
@@ -50,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           [<a href="/">Home</a>] — imageboard powered by Kubernetes
         </div>
         <main>{children}</main>
+        </Providers>
       </body>
     </html>
   );
