@@ -4,6 +4,8 @@ metadata:
   name: lolcatz-foobar
 
 build:
+  platforms:
+    - linux/amd64
   # Builds run in-cluster via kaniko, pushing to zot.ee-lte-1.codemowers.io.
   # Prerequisites:
   #   kubectl create ns lolcatz-foobar
