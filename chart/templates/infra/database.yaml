@@ -2,7 +2,7 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: lolcatz-database
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   instances: 1
   bootstrap:

@@ -2,7 +2,7 @@ apiVersion: codemowers.cloud/v1
 kind: OIDCClient
 metadata:
   name: lolcatz-frontend
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   displayName: Lolcatz
   applicationType: web

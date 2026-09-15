@@ -1,13 +1,11 @@
-FROM golang:1.25-alpine AS builder
-WORKDIR /src
+FROM golang:1.25-alpine AS build
+WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /comments .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/server .
 
 FROM alpine:3.20
-RUN adduser -D -u 1001 app
-USER app
-COPY --from=builder /comments /comments
+COPY --from=build /app/server /server
 EXPOSE 8080
-ENTRYPOINT ["/comments"]
+ENTRYPOINT ["/server"]

@@ -1,4 +1,3 @@
-region: ee-lte-1
 domain: can-i-haz-kubernetes.ee-lte-1.codemowers.io
 
 uploader:
@@ -11,5 +10,9 @@ comments:
   image: git.codemowers.io/matmlazi/lolcatz-foobar/comments:latest
 tagger:
   image: git.codemowers.io/matmlazi/lolcatz-foobar/tagger:latest
+taggerModel:
+  image: git.codemowers.io/matmlazi/lolcatz-foobar/tagger-model:latest
+ocr:
+  image: git.codemowers.io/matmlazi/lolcatz-foobar/ocr:latest
 frontend:
   image: git.codemowers.io/matmlazi/lolcatz-foobar/frontend:latest

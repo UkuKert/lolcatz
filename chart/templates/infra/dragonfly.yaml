@@ -2,7 +2,7 @@ apiVersion: dragonflydb.io/v1alpha1
 kind: Dragonfly
 metadata:
   name: lolcatz-redis
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   replicas: 1
   args:
@@ -20,7 +20,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: lolcatz-redis
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   selector:
     app: lolcatz-redis

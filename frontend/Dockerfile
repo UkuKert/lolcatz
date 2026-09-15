@@ -5,6 +5,8 @@ RUN npm ci
 
 FROM node:20-alpine AS builder
 WORKDIR /app
+ARG NEXT_PUBLIC_DEV_AUTH_TOKEN
+ENV NEXT_PUBLIC_DEV_AUTH_TOKEN=$NEXT_PUBLIC_DEV_AUTH_TOKEN
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
@@ -12,10 +14,8 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN addgroup -g 1001 app && adduser -u 1001 -G app -s /bin/sh -D app
-COPY --from=builder --chown=app:app /app/.next/standalone ./
-COPY --from=builder --chown=app:app /app/.next/static ./.next/static
-COPY --from=builder --chown=app:app /app/public ./public
-USER app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 EXPOSE 3000
 CMD ["node", "server.js"]

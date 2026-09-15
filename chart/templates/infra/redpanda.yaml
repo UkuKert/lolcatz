@@ -1,23 +1,66 @@
 apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: lolcatz-redpanda
+  namespace: lolcatz
+spec:
+  chartRef: {}
+  clusterSpec:
+    console:
+      enabled: false
+    external:
+      enabled: false
+    monitoring:
+      enabled: false
+    listeners:
+      admin:
+        address: "::"
+      http:
+        address: "::"
+      kafka:
+        address: "::"
+      rpc:
+        address: "::"
+      schemaRegistry:
+        address: "::"
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    serviceAccount:
+      create: true
+      name: lolcatz-redpanda
+    statefulset:
+      replicas: 1
+    storage:
+      persistentVolume:
+        storageClass: kafka
+    tls:
+      enabled: false
+---
+apiVersion: cluster.redpanda.com/v1alpha2
 kind: Topic
 metadata:
   name: lolcatz-images
-  namespace: redpanda
+  namespace: lolcatz
 spec:
+  cluster:
+    clusterRef:
+      name: lolcatz-redpanda
   partitions: 3
   replicationFactor: 1
-  kafkaApiSpec:
-    brokers:
-      - redpanda-0.redpanda.redpanda.svc.cluster.local:9092
 ---
 apiVersion: cluster.redpanda.com/v1alpha2
 kind: Topic
 metadata:
   name: lolcatz-tags
-  namespace: redpanda
+  namespace: lolcatz
 spec:
+  cluster:
+    clusterRef:
+      name: lolcatz-redpanda
   partitions: 3
   replicationFactor: 1
-  kafkaApiSpec:
-    brokers:
-      - redpanda-0.redpanda.redpanda.svc.cluster.local:9092

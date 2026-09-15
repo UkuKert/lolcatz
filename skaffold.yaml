@@ -6,18 +6,20 @@ metadata:
 build:
   platforms:
     - linux/amd64
+  tagPolicy:
+    inputDigest: {}
   # Builds run in-cluster via kaniko, pushing to zot.ee-lte-1.codemowers.io.
   # Prerequisites:
-  #   kubectl create ns lolcatz-foobar
-  #   kubectl create secret docker-registry zot-push-secret -n lolcatz-foobar \
+  #   kubectl create ns lolcatz
+  #   kubectl create secret docker-registry zot-push-secret -n lolcatz \
   #     --docker-server=zot.ee-lte-1.codemowers.io \
   #     --docker-username=<your-email> \
   #     --docker-password=<zot-api-key>
   cluster:
-    namespace: lolcatz-foobar
+    namespace: lolcatz
     serviceAccount: kaniko
     dockerConfig:
-      secretName: zot-push-secret
+      secretName: zot-kaniko-config
     resources:
       requests:
         cpu: "500m"
@@ -42,32 +44,42 @@ build:
 
 
   artifacts:
-    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/uploader
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/uploader
       context: services/uploader
       kaniko:
         dockerfile: Dockerfile
         skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/browse
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/browse
       context: services/browse
       kaniko:
         dockerfile: Dockerfile
         skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/search
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/search
       context: services/search
       kaniko:
         dockerfile: Dockerfile
         skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/comments
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/comments
       context: services/comments
       kaniko:
         dockerfile: Dockerfile
         skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/tagger
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger
       context: services/tagger
       kaniko:
         dockerfile: Dockerfile
         skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/frontend
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger-model
+      context: services/tagger
+      kaniko:
+        dockerfile: Dockerfile.model
+        skipPushPermissionCheck: true
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/ocr
+      context: services/ocr
+      kaniko:
+        dockerfile: Dockerfile
+        skipPushPermissionCheck: true
+    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/frontend
       context: frontend
       kaniko:
         dockerfile: Dockerfile
@@ -80,24 +92,28 @@ deploy:
         chartPath: chart
         valuesFiles:
           - chart/values.yaml
+        setValues:
+          region: ee-lte-1
         setValueTemplates:
-          uploader.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/uploader:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_uploader}}"
-          browse.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/browse:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_browse}}"
-          search.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/search:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_search}}"
-          comments.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/comments:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_comments}}"
-          tagger.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/tagger:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_tagger}}"
-          frontend.image: "zot.ee-lte-1.codemowers.io/matmlazi/lolcatz-foobar/frontend:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_matmlazi_lolcatz_foobar_frontend}}"
-        namespace: lolcatz-foobar
+          uploader.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/uploader:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_uploader}}"
+          browse.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/browse:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_browse}}"
+          search.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/search:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_search}}"
+          comments.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/comments:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_comments}}"
+          tagger.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_tagger}}"
+          taggerModel.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger-model:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_tagger_model}}"
+          ocr.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/ocr:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_ocr}}"
+          frontend.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/frontend:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_frontend}}"
+        namespace: lolcatz
         createNamespace: true
 
 portForward:
   - resourceType: service
     resourceName: lolcatz-frontend
-    namespace: lolcatz-foobar
+    namespace: lolcatz
     port: 3000
     localPort: 3000
   - resourceType: service
     resourceName: lolcatz-uploader
-    namespace: lolcatz-foobar
+    namespace: lolcatz
     port: 8080
     localPort: 8081

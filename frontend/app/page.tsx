@@ -1,26 +1,51 @@
+"use client";
+
+import { useEffect, useState } from "react";
+
+const boards = [
+  { id: "b", name: "Random", icon: "🎲" },
+  { id: "g", name: "Technology", icon: "💾" },
+  { id: "k", name: "Weapons", icon: "⚔️" },
+  { id: "a", name: "Anime", icon: "🌸" },
+  { id: "mu", name: "Music", icon: "🎵" },
+  { id: "v", name: "Video Games", icon: "🎮" },
+];
+
 export default function Home() {
-  const boards = [
-    { id: "b", name: "Random" },
-    { id: "g", name: "Technology" },
-    { id: "k", name: "Weapons" },
-    { id: "a", name: "Anime" },
-    { id: "mu", name: "Music" },
-    { id: "v", name: "Video Games" },
-  ];
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
+
+  useEffect(() => {
+    fetch("/api/browse/boards/counts")
+      .then(response => {
+        if (!response.ok) throw new Error("Could not load post counts");
+        return response.json();
+      })
+      .then(setCounts)
+      .catch(() => setCounts({}));
+  }, []);
+
   return (
-    <div>
-      <h2 style={{ marginBottom: 12, color: "#34345c" }}>Boards</h2>
-      <table style={{ borderCollapse: "collapse", width: "100%", maxWidth: 600 }}>
-        <tbody>
-          {boards.map(b => (
-            <tr key={b.id} style={{ borderBottom: "1px solid #d9bfb7" }}>
-              <td style={{ padding: "6px 12px", fontWeight: "bold" }}>
-                <a href={`/board/${b.id}`} style={{ color: "#0f0c5d" }}>/{b.id}/ — {b.name}</a>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="home">
+      <div className="home-intro">
+        <span className="eyebrow">Choose your chaos</span>
+        <h2>Subchannels</h2>
+        <p>Fresh takes, questionable uptime, lovingly orchestrated.</p>
+      </div>
+      <div className="board-grid">
+        {boards.map(board => (
+          <a key={board.id} href={`/board/${board.id}`} className="board-card">
+            <span className="board-icon" aria-hidden="true">{board.icon}</span>
+            <span className="board-details">
+              <strong>/{board.id}/</strong>
+              <span>{board.name}</span>
+            </span>
+            <span className="post-count">
+              <strong>{counts === null ? "…" : (counts[board.id] ?? 0).toLocaleString()}</strong>
+              <span>{counts?.[board.id] === 1 ? "post" : "posts"}</span>
+            </span>
+          </a>
+        ))}
+      </div>
     </div>
   );
 }

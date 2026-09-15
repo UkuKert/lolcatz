@@ -9,6 +9,7 @@ import os
 import io
 import psycopg2
 import boto3
+from PIL import Image, ImageOps
 from botocore.client import Config
 from confluent_kafka import Consumer, Producer, KafkaError
 from ultralytics import YOLO
@@ -42,12 +43,88 @@ def make_s3():
     )
 
 
+def _number(value):
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _text(value):
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return str(value).strip(" \x00") if value is not None else ""
+
+
+def _coordinate(values, reference):
+    if not values or len(values) != 3:
+        return None
+    degrees = _number(values[0])
+    minutes = _number(values[1])
+    seconds = _number(values[2])
+    if None in (degrees, minutes, seconds):
+        return None
+    coordinate = degrees + minutes / 60 + seconds / 3600
+    if _text(reference).upper() in ("S", "W"):
+        coordinate *= -1
+    return round(coordinate, 7)
+
+
+def extract_metadata(image):
+    """Return useful EXIF fields while excluding device/owner serial data."""
+    metadata = {"width": image.width, "height": image.height}
+    exif = image.getexif()
+    if not exif:
+        return metadata
+
+    text_fields = {
+        271: "camera_make",
+        272: "camera_model",
+        305: "software",
+        36867: "taken_at",
+        36881: "timezone",
+        42036: "lens_model",
+    }
+    number_fields = {
+        274: "orientation",
+        33434: "exposure_seconds",
+        33437: "f_number",
+        34855: "iso",
+        37386: "focal_length_mm",
+    }
+    for tag, name in text_fields.items():
+        value = _text(exif.get(tag))
+        if value:
+            metadata[name] = value
+    for tag, name in number_fields.items():
+        value = _number(exif.get(tag))
+        if value is not None:
+            metadata[name] = value
+
+    try:
+        gps = exif.get_ifd(34853)
+    except (AttributeError, KeyError, TypeError):
+        gps = {}
+    latitude = _coordinate(gps.get(2), gps.get(1))
+    longitude = _coordinate(gps.get(4), gps.get(3))
+    if latitude is not None and longitude is not None:
+        location = {"latitude": latitude, "longitude": longitude}
+        altitude = _number(gps.get(6))
+        if altitude is not None:
+            location["altitude_m"] = -altitude if gps.get(5) == 1 else altitude
+        metadata["gps"] = location
+
+    return metadata
+
+
 def main():
-    model = YOLO("yolov8n.pt")
+    model = YOLO(get_env("YOLO_MODEL_PATH", "yolov8n.pt"))
     log.info("YOLO model loaded")
 
     db = psycopg2.connect(must_env("DATABASE_URL"))
     db.autocommit = True
+    with db.cursor() as cur:
+        cur.execute("ALTER TABLE images ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb")
     log.info("postgres connected")
 
     s3 = make_s3()
@@ -88,8 +165,14 @@ def main():
             resp = s3.get_object(Bucket=bucket, Key=object_key)
             img_bytes = resp["Body"].read()
 
-            results = model(io.BytesIO(img_bytes), verbose=False)
-            tags = list({
+            # Ultralytics does not treat BytesIO as an image source. Decode
+            # the object first and normalize orientation/color for inference.
+            with Image.open(io.BytesIO(img_bytes)) as source:
+                metadata = extract_metadata(source)
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                image.load()
+            results = model(image, verbose=False)
+            tags = sorted({
                 model.names[int(box.cls)]
                 for r in results
                 for box in r.boxes
@@ -98,7 +181,10 @@ def main():
             log.info("image %s -> tags %s", image_id, tags)
 
             with db.cursor() as cur:
-                cur.execute("UPDATE images SET tags = %s WHERE id = %s", (tags, image_id))
+                cur.execute(
+                    "UPDATE images SET tags = %s, metadata = %s::jsonb WHERE id = %s",
+                    (tags, json.dumps(metadata), image_id),
+                )
 
             producer.produce(topic_out, key=image_id.encode(),
                              value=json.dumps({"id": image_id, "tags": tags}).encode())

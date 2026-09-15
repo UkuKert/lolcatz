@@ -7,8 +7,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 var db *sql.DB
@@ -29,14 +30,14 @@ func getEnvOr(k, def string) string {
 }
 
 type Image struct {
-	ID          string   `json:"id"`
-	Board       string   `json:"board"`
-	Title       string   `json:"title"`
-	Filename    string   `json:"filename"`
-	ContentType string   `json:"content_type"`
-	Tags        []string `json:"tags"`
-	UploadedAt  string   `json:"uploaded_at"`
-	ImageURL    string   `json:"image_url"`
+	ID          string    `json:"id"`
+	Board       string    `json:"board"`
+	Title       string    `json:"title"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	Tags        []string  `json:"tags"`
+	UploadedAt  time.Time `json:"uploaded_at"`
+	ImageURL    string    `json:"image_url"`
 }
 
 func main() {
@@ -62,8 +63,6 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
 	board := strings.TrimSpace(r.URL.Query().Get("board"))
-	minioBase := mustEnv("S3_PUBLIC_URL")
-
 	var rows *sql.Rows
 	var err error
 
@@ -100,10 +99,10 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var img Image
 		if err := rows.Scan(&img.ID, &img.Board, &img.Title, &img.Filename,
-			&img.ContentType, &img.Tags, &img.UploadedAt); err != nil {
+			&img.ContentType, pq.Array(&img.Tags), &img.UploadedAt); err != nil {
 			continue
 		}
-		img.ImageURL = minioBase + "/lolcatz-images/" + img.Board + "/" + img.ID
+		img.ImageURL = "/api/browse/media/" + img.ID
 		images = append(images, img)
 	}
 	w.Header().Set("Content-Type", "application/json")

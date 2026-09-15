@@ -16,6 +16,7 @@ import (
 var (
 	db       *sql.DB
 	verifier *gooidc.IDTokenVerifier
+	devToken = os.Getenv("DEV_AUTH_TOKEN")
 )
 
 func mustEnv(k string) string {
@@ -36,11 +37,15 @@ func getEnvOr(k, def string) string {
 func main() {
 	var err error
 
-	provider, err := gooidc.NewProvider(context.Background(), mustEnv("OIDC_ISSUER"))
-	if err != nil {
-		log.Fatalf("oidc provider: %v", err)
+	if devToken == "" {
+		provider, err := gooidc.NewProvider(context.Background(), mustEnv("OIDC_ISSUER"))
+		if err != nil {
+			log.Fatalf("oidc provider: %v", err)
+		}
+		verifier = provider.Verifier(&gooidc.Config{SkipClientIDCheck: true})
+	} else {
+		log.Printf("WARNING: development authentication is enabled")
 	}
-	verifier = provider.Verifier(&gooidc.Config{SkipClientIDCheck: true})
 
 	db, err = sql.Open("postgres", mustEnv("DATABASE_URL"))
 	if err != nil {
@@ -61,9 +66,21 @@ func main() {
 
 func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if raw == "" {
+		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || raw == "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if devToken != "" {
+			if raw != devToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			email := getEnvOr("DEV_AUTH_EMAIL", "developer@localhost")
+			name := getEnvOr("DEV_AUTH_NAME", "Developer")
+			r.Header.Set("X-User-Email", email)
+			upsertUser(r, email, name)
+			next(w, r)
 			return
 		}
 		token, err := verifier.Verify(r.Context(), raw)
@@ -73,10 +90,27 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		var claims struct {
 			Email string `json:"email"`
+			Name  string `json:"name"`
 		}
-		token.Claims(&claims)
+		if err := token.Claims(&claims); err != nil || claims.Email == "" {
+			http.Error(w, "invalid token claims", http.StatusUnauthorized)
+			return
+		}
 		r.Header.Set("X-User-Email", claims.Email)
+		if claims.Name == "" {
+			claims.Name = claims.Email
+		}
+		upsertUser(r, claims.Email, claims.Name)
 		next(w, r)
+	}
+}
+
+func upsertUser(r *http.Request, email, name string) {
+	if _, err := db.ExecContext(r.Context(), `
+		INSERT INTO users (email, name) VALUES ($1, $2)
+		ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
+	`, email, name); err != nil {
+		log.Printf("upsert user: %v", err)
 	}
 }
 

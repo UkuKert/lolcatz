@@ -2,9 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: lolcatz-frontend
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
-  replicas: 1
+  replicas: 3
   revisionHistoryLimit: 0
   selector:
     matchLabels:
@@ -19,8 +19,11 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: frontend
+          securityContext: { allowPrivilegeEscalation: false }
           image: {{ .Values.frontend.image }}
           imagePullPolicy: Always
           ports:
@@ -39,7 +42,7 @@ spec:
             - name: COMMENTS_URL
               value: http://lolcatz-comments:8080
             - name: S3_PUBLIC_URL
-              value: http://minio.ee-lte-1.codemowers.io
+              value: https://minio.ee-lte-1.codemowers.io
             - name: OIDC_ISSUER
               value: https://auth.ee-lte-1.codemowers.io/
             - name: OIDC_CLIENT_ID
@@ -71,7 +74,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: lolcatz-frontend
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   selector:
     app: lolcatz-frontend
@@ -83,7 +86,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: lolcatz-frontend-tls
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   secretName: lolcatz-frontend-tls
   dnsNames:
@@ -96,7 +99,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: lolcatz-frontend
-  namespace: lolcatz-foobar
+  namespace: lolcatz
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
 spec:
@@ -118,7 +121,7 @@ apiVersion: secretgenerator.mittwald.de/v1alpha1
 kind: StringSecret
 metadata:
   name: lolcatz-nextauth-secret
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   forceRegenerate: false
   fields:

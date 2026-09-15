@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense } from "react";
+import { TagBadges } from "../tag-badges";
 
 interface Image {
   id: string;
@@ -47,7 +48,7 @@ function SearchResults() {
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search titles..." />
         <button type="submit">Go</button>
       </form>
-      {tag && <div style={{ marginBottom: 8 }}>Showing tag: <strong>[{tag}]</strong></div>}
+      {tag && <div className="active-tag-filter">Showing tag: <span className="tag-badge">{tag}</span></div>}
       <div>
         {results.map(img => (
           <div key={img.id} className="post">
@@ -55,7 +56,7 @@ function SearchResults() {
               <img src={img.image_url} alt={img.title || img.filename} />
             </a>
             <div className="title">{img.title || img.filename}</div>
-            <div className="tags">{img.tags?.map(t => `[${t}]`).join(" ")}</div>
+            <TagBadges tags={img.tags} />
           </div>
         ))}
       </div>

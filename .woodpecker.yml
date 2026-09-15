@@ -57,6 +57,16 @@ steps:
       DOCKER_CONFIG:
         from_secret: zot_docker_config
 
+  build-tagger-model:
+    image: gcr.io/kaniko-project/executor:latest
+    settings:
+      dockerfile: services/tagger/Dockerfile.model
+      context: services/tagger
+      destination: *registry/tagger-model:${CI_COMMIT_SHA:0:8}
+    environment:
+      DOCKER_CONFIG:
+        from_secret: zot_docker_config
+
   build-frontend:
     image: gcr.io/kaniko-project/executor:latest
     settings:

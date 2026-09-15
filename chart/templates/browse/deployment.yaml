@@ -2,9 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: lolcatz-browse
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
-  replicas: 1
+  replicas: 3
   revisionHistoryLimit: 0
   selector:
     matchLabels:
@@ -19,8 +19,11 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: browse
+          securityContext: { allowPrivilegeEscalation: false }
           image: {{ .Values.browse.image }}
           imagePullPolicy: Always
           ports:
@@ -36,8 +39,12 @@ spec:
               value: minio.minio.svc.cluster.local:9000
             - name: S3_PUBLIC_URL
               value: https://minio.ee-lte-1.codemowers.io
+            {{- with .Values.region }}
+            - name: S3_REGION
+              value: {{ . | quote }}
+            {{- end }}
             - name: S3_BUCKET
-              value: lolcatz-images
+              value: {{ .Release.Namespace }}-images
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -60,7 +67,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: lolcatz-browse
-  namespace: lolcatz-foobar
+  namespace: lolcatz
 spec:
   selector:
     app: lolcatz-browse
