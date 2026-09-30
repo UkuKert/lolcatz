@@ -1,16 +1,76 @@
 # Local dev — all infra runs locally in containers.
 # Images are served via local minio (not the in-cluster one which is unreachable from laptop).
-# Woodpecker and zot are public and reachable, but not needed for local dev.
+# GitHub Actions publishes release images; local dev builds from source.
 #
 # Usage:
 #   docker compose up --build
 #   Stop:     docker compose down
-#   Browse:   http://localhost:8082/boards/b
+#   Browse:   http://localhost:8082/api/browse/boards/b
 #   Frontend: http://localhost:3000
 
 services:
+  go-tests:
+    profiles:
+      - tools
+    build:
+      context: .
+      dockerfile: services/Dockerfile.golang
+      target: tests
+    environment:
+      S3_BUCKET: test
+      S3_ENDPOINT: storage.example.test
+      S3_USE_SSL: "true"
+      TEST_DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
+
+  search-tests:
+    profiles:
+      - tools
+    build:
+      context: .
+      dockerfile: services/Dockerfile.search
+      target: tests
+    environment:
+      TEST_DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  rust-tools:
+    image: rust:1.94.1-alpine
+    profiles:
+      - tools
+    working_dir: /app
+    volumes:
+      - ./services/search:/app
+
+  frontend-tests:
+    profiles:
+      - tools
+    build:
+      context: .
+      dockerfile: services/Dockerfile.frontend
+      target: tests
+
+  node-tools:
+    image: node:26-alpine
+    profiles:
+      - tools
+    working_dir: /app
+    volumes:
+      - ./services/frontend:/app
+    environment:
+      npm_config_cache: /tmp/npm
+
+  go-tools:
+    image: golang:1.26-alpine
+    profiles:
+      - tools
+    working_dir: /services
+    volumes:
+      - ./services:/services
+
   postgres:
-    image: postgres:16-alpine
+    image: postgis/postgis:18-3.6
     restart: unless-stopped
     environment:
       POSTGRES_DB: lolcatz
@@ -19,28 +79,33 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lolcatz -d lolcatz"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U lolcatz -d lolcatz
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.37.0
     restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 5s
       timeout: 5s
       retries: 10
 
   redpanda:
-    image: redpandadata/redpanda:latest
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.1
     restart: unless-stopped
     command:
       - redpanda
@@ -54,22 +119,28 @@ services:
       - "9092:9092"
       - "9644:9644"
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info --brokers=localhost:29092 >/dev/null 2>&1"]
+      test:
+        - CMD-SHELL
+        - rpk cluster info --brokers=localhost:29092 >/dev/null 2>&1
       interval: 10s
       timeout: 5s
       retries: 15
 
   redpanda-init:
-    image: redpandadata/redpanda:latest
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.1
     entrypoint: |
       /bin/bash -c "
         until rpk cluster info --brokers redpanda:29092 >/dev/null 2>&1; do sleep 2; done
-        rpk topic create lolcatz-images --brokers redpanda:29092 || true
-        rpk topic create lolcatz-tags   --brokers redpanda:29092 || true
+        rpk topic create lolcatz-images --brokers redpanda:29092 -c cleanup.policy=compact || true
+        rpk topic create lolcatz-tags   --brokers redpanda:29092 -c cleanup.policy=compact || true
       "
 
   minio:
-    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    networks:
+      default:
+        aliases:
+          - minio.localhost
+    image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -81,13 +152,17 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9000/minio/health/live
       interval: 5s
       timeout: 5s
       retries: 10
 
   minio-init:
-    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: pgsty/mc:RELEASE.2026-08-06T00-00-00Z
     entrypoint: |
       /bin/sh -c "
         until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done
@@ -96,128 +171,354 @@ services:
       "
 
   uploader:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     build:
-      context: services/uploader
+      context: .
+      dockerfile: services/Dockerfile.golang
+      args:
+        SERVICE: uploader
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
-      S3_ENDPOINT: minio:9000
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: lolcatz-images
-      # Public URL used to build image links — points to local minio
-      S3_PUBLIC_URL: http://localhost:9000
+      REDIS_ADDR: redis:6379
       KAFKA_BROKERS: redpanda:29092
       DEV_AUTH_TOKEN: lolcatz-local
       DEV_AUTH_EMAIL: developer@localhost
-      PORT: "8080"
     ports:
       - "8081:8080"
     networks:
       default:
-        aliases: [lolcatz-uploader]
+        aliases:
+          - lolcatz-uploader
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:9090/health
       interval: 5s
       timeout: 3s
       retries: 10
 
   browse:
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
     build:
-      context: services/browse
+      context: .
+      dockerfile: services/Dockerfile.golang
+      args:
+        SERVICE: browse
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
-      S3_ENDPOINT: minio:9000
-      S3_PUBLIC_URL: http://localhost:9000
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: lolcatz-images
-      PORT: "8080"
+      REDIS_ADDR: redis:6379
+      ADMIN_ENABLED: "true"
     ports:
       - "8082:8080"
     networks:
       default:
-        aliases: [lolcatz-browse]
+        aliases:
+          - lolcatz-browse
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:9090/health
       interval: 5s
       timeout: 3s
       retries: 10
 
-  search:
+  admin:
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:9090/health
+      interval: 5s
+      timeout: 3s
+      retries: 10
     build:
-      context: services/search
+      context: .
+      dockerfile: services/Dockerfile.golang
+      args:
+        SERVICE: admin
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
-      S3_PUBLIC_URL: http://localhost:9000
-      S3_BUCKET: lolcatz-images
-      PORT: "8080"
+      REDIS_ADDR: redis:6379
+      DEV_AUTH_TOKEN: lolcatz-local
+    depends_on:
+      uploader:
+        condition: service_healthy
+
+  schema-init:
+    image: postgis/postgis:18-3.6
+    environment:
+      PGHOST: postgres
+      PGUSER: lolcatz
+      PGPASSWORD: lolcatz
+      PGDATABASE: lolcatz
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS postgis' -f /schema/ocr.sql -f /schema/tagger.sql
+    volumes:
+      - ./services/ocr/schema.sql:/schema/ocr.sql:ro
+      - ./services/tagger/schema.sql:/schema/tagger.sql:ro
+    depends_on:
+      uploader:
+        condition: service_healthy
+
+  search:
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
+    build:
+      context: .
+      dockerfile: services/Dockerfile.search
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
     ports:
       - "8083:8080"
     networks:
       default:
-        aliases: [lolcatz-search]
+        aliases:
+          - lolcatz-search
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      test: ["CMD", "/server", "--healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   comments:
+    depends_on:
+      uploader:
+        condition: service_healthy
     build:
-      context: services/comments
+      context: .
+      dockerfile: services/Dockerfile.golang
+      args:
+        SERVICE: comments
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
       DEV_AUTH_TOKEN: lolcatz-local
       DEV_AUTH_EMAIL: developer@localhost
-      PORT: "8080"
     ports:
       - "8084:8080"
     networks:
       default:
-        aliases: [lolcatz-comments]
+        aliases:
+          - lolcatz-comments
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:9090/health
       interval: 5s
       timeout: 3s
       retries: 10
 
-  tagger:
-    profiles: ["ai"]
+  exif:
     build:
-      context: services/tagger
+      context: .
+      dockerfile: services/Dockerfile.golang
+      args:
+        SERVICE: exif
     restart: unless-stopped
     environment:
       KAFKA_BROKERS: redpanda:29092
-      KAFKA_TOPIC_IN: lolcatz-images
-      KAFKA_TOPIC_OUT: lolcatz-tags
+      DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: lolcatz-images
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+
+  tagger-model:
+    profiles:
+      - ai
+    build:
+      context: .
+      dockerfile: services/Dockerfile.tagger-model
+    command:
+      - cp
+      - /yolov8n.pt
+      - /models/yolov8n.pt
+    volumes:
+      - tagger_model:/models
+
+  tagger:
+    profiles:
+      - ai
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
+      tagger-model:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+    volumes:
+      - tagger_model:/models:ro
+    build:
+      context: .
+      dockerfile: services/Dockerfile.tagger
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: redpanda:29092
       DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
       # Tagger fetches images from minio directly
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: lolcatz-images
 
-  frontend:
+  ocr:
     build:
-      context: frontend
+      context: .
+      dockerfile: services/Dockerfile.ocr
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
+      KAFKA_BROKERS: redpanda:29092
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: lolcatz-images
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+
+  thumbnailer: &thumbnailer
+    image: lolcatz-thumbnailer:latest
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:9090/health', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    build:
+      context: .
+      dockerfile: services/Dockerfile.thumbnailer
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: lolcatz-images
+    depends_on:
+      uploader:
+        condition: service_healthy
+
+  thumbnailer-worker:
+    <<: *thumbnailer
+    healthcheck:
+      disable: true
+    command:
+      - python
+      - worker.py
+    environment:
+      DATABASE_URL: postgres://lolcatz:lolcatz@postgres:5432/lolcatz?sslmode=disable
+      S3_ENDPOINT: minio.localhost:9000
+      S3_USE_SSL: "false"
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: lolcatz-images
+      KAFKA_BROKERS: redpanda:29092
+    depends_on:
+      uploader:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  frontend:
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - 'fetch(''http://localhost:9090/health'', {signal: AbortSignal.timeout(2000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    build:
+      context: .
+      dockerfile: services/Dockerfile.frontend
       args:
         NEXT_PUBLIC_DEV_AUTH_TOKEN: lolcatz-local
     restart: unless-stopped
     environment:
-      # Shown to browser — local minio
-      S3_PUBLIC_URL: http://localhost:9000
       NEXT_PUBLIC_DEV_AUTH_TOKEN: lolcatz-local
       NEXTAUTH_URL: http://localhost:3000
+      BROWSE_URL: http://browse:8080
       NEXTAUTH_SECRET: local-development-only
-      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    read_only: true
+    depends_on:
+      - frontend
+      - browse
+      - thumbnailer
+      - search
+      - comments
+      - uploader
+      - admin
     ports:
-      - "3000:3000"
+      - "3000:8080"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
 
 volumes:
+  tagger_model:
   postgres_data:
   minio_data:
   redis_data:

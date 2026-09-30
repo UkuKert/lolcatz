@@ -1,119 +1,87 @@
 apiVersion: skaffold/v4beta11
 kind: Config
 metadata:
-  name: lolcatz-foobar
+  name: lolcatz
 
 build:
   platforms:
     - linux/amd64
   tagPolicy:
     inputDigest: {}
-  # Builds run in-cluster via kaniko, pushing to zot.ee-lte-1.codemowers.io.
-  # Prerequisites:
-  #   kubectl create ns lolcatz
-  #   kubectl create secret docker-registry zot-push-secret -n lolcatz \
-  #     --docker-server=zot.ee-lte-1.codemowers.io \
-  #     --docker-username=<your-email> \
-  #     --docker-password=<zot-api-key>
-  cluster:
-    namespace: lolcatz
-    serviceAccount: kaniko
-    dockerConfig:
-      secretName: zot-kaniko-config
-    resources:
-      requests:
-        cpu: "500m"
-        memory: "1Gi"
-      limits:
-        cpu: "2"
-        memory: "4Gi"
-    # Route upstream pulls through zot on-demand cache -- no Docker Hub rate limits
-    registryMirrors:
-      - host: docker.io
-        mirrors:
-          - zot.ee-lte-1.codemowers.io/docker.io
-      - host: ghcr.io
-        mirrors:
-          - zot.ee-lte-1.codemowers.io/ghcr.io
-      - host: quay.io
-        mirrors:
-          - zot.ee-lte-1.codemowers.io/quay.io
-      - host: gcr.io
-        mirrors:
-          - zot.ee-lte-1.codemowers.io/gcr.io
-
+  # Build on your laptop and push using local Docker registry credentials.
+  # Configure your context-specific default-repo and registry login (see README.md).
+  local:
+    concurrency: 0
+    push: true
+    useDockerCLI: true
+    useBuildkit: true
 
   artifacts:
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/uploader
-      context: services/uploader
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/browse
-      context: services/browse
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/search
-      context: services/search
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/comments
-      context: services/comments
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger
-      context: services/tagger
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger-model
-      context: services/tagger
-      kaniko:
-        dockerfile: Dockerfile.model
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/ocr
-      context: services/ocr
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
-    - image: zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/frontend
-      context: frontend
-      kaniko:
-        dockerfile: Dockerfile
-        skipPushPermissionCheck: true
+    - image: lolcatz-uploader
+      docker:
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: uploader
+    - image: lolcatz-browse
+      docker:
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: browse
+    - image: lolcatz-search
+      docker:
+        dockerfile: services/Dockerfile.search
+    - image: lolcatz-comments
+      docker:
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: comments
+    - image: lolcatz-admin
+      docker:
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: admin
+    - image: lolcatz-tagger
+      docker:
+        dockerfile: services/Dockerfile.tagger
+    - image: lolcatz-tagger-model
+      docker:
+        dockerfile: services/Dockerfile.tagger-model
+    - image: lolcatz-thumbnailer
+      docker:
+        dockerfile: services/Dockerfile.thumbnailer
+    - image: lolcatz-ocr
+      docker:
+        dockerfile: services/Dockerfile.ocr
+    - image: lolcatz-exif
+      docker:
+        dockerfile: services/Dockerfile.golang
+        buildArgs:
+          SERVICE: exif
+    - image: lolcatz-frontend
+      docker:
+        dockerfile: services/Dockerfile.frontend
 
+# Inherit the selected kubeconfig context and its namespace.
+# Leave release and port-forward namespaces unset.
 deploy:
   helm:
     releases:
-      - name: lolcatz-foobar
+      - name: lolcatz
         chartPath: chart
-        valuesFiles:
-          - chart/values.yaml
         setValues:
-          region: ee-lte-1
+          imageRegistry: ""
+          imagePullSecrets[0].name: zot-pull-secret
+        # Helm test hooks and image volumes are outside automatic image replacement.
         setValueTemplates:
-          uploader.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/uploader:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_uploader}}"
-          browse.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/browse:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_browse}}"
-          search.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/search:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_search}}"
-          comments.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/comments:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_comments}}"
-          tagger.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_tagger}}"
-          taggerModel.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/tagger-model:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_tagger_model}}"
-          ocr.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/ocr:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_ocr}}"
-          frontend.image: "zot.ee-lte-1.codemowers.io/laurivosandi/lolcatz-foobar/frontend:{{.IMAGE_TAG_zot_ee_lte_1_codemowers_io_laurivosandi_lolcatz_foobar_frontend}}"
-        namespace: lolcatz
-        createNamespace: true
+          frontend.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_frontend}}"
+          taggerModel.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_tagger_model}}"
 
 portForward:
   - resourceType: service
     resourceName: lolcatz-frontend
-    namespace: lolcatz
     port: 3000
     localPort: 3000
   - resourceType: service
     resourceName: lolcatz-uploader
-    namespace: lolcatz
     port: 8080
     localPort: 8081

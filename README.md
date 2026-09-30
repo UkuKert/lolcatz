@@ -1,91 +1,157 @@
 # Can I haz Kubernetes?
 
-4chan-style image board running on Kubernetes as a demo application showcasing
-the capabilities of [Codemowers Cloud](https://codemowers.cloud/).
+An image board demonstrating [Codemowers Cloud](https://codemowers.cloud/):
+direct browser uploads, searchable OCR, object detection, and asynchronous image
+processing on Kubernetes.
 
-**Production:** https://can-i-haz-kubernetes.ee-lte-1.codemowers.io running off 4-node bare metal Kubernetes cluster
+**Demo:** [can-i-haz-kubernetes.codemowers.io](https://can-i-haz-kubernetes.codemowers.io)
 
 ## Architecture
 
 | Service | Language | Role |
 |---|---|---|
-| uploader | Go | Multipart upload → Minio + Postgres + Kafka |
+| uploader | Go | Authorize direct S3 uploads, confirm posts, publish Kafka events |
 | browse | Go | Board listing, thread view, comments |
-| search | Go | Title/tag search (Postgres GIN index) |
+| search | Rust / Rocket | Public title/OCR/tag search in Postgres |
 | comments | Go | Post/delete comments |
+| admin | Go | Authorize board administration and create/delete boards |
 | tagger | Python/YOLO | Kafka consumer → auto-tag images via YOLOv8 |
 | ocr | Python/Tesseract | Kafka consumer → extract caption text into image metadata |
-| frontend | Next.js 14 | UI, proxies API to backend services |
+| thumbnailer | Python/libjpeg-turbo | Kafka + on-demand JPEG thumbnails cached in S3 |
+| exif | Go | Kafka consumer → extract EXIF camera, exposure, dimensions and GPS metadata |
+| frontend | Next.js 14 | UI and OIDC session handling |
 
-Images stored in Minio (`lolcatz-images` bucket), served publicly via `http://minio.ee-lte-1.codemowers.io`.
-Metadata in Postgres (cnpg). Sessions in Dragonfly. Events via Redpanda.
+Traefik in Kubernetes and nginx in local development route
+`/api/{browse,search,comments,upload,admin,thumbnails}` directly to the matching backend service
+without rewriting the path. API traffic does not pass through the Next.js
+process; only `/api/auth` belongs to the frontend.
 
-## Local dev (docker-compose)
+Images live in S3-compatible storage (`<namespace>-images` in Kubernetes,
+`lolcatz-images` in Compose). Browsers transfer image bytes directly using signed
+S3 URLs; the public storage endpoint comes from operator-generated settings.
+Metadata lives in PostgreSQL (CNPG), board-list caches in Dragonfly, and events
+in Redpanda. NextAuth stores sessions, refresh tokens and ID tokens in its
+encrypted HttpOnly cookie; only the access token is exposed to browser code.
+Postgres enables `pgvector` for the optional InsightFace exercise and PostGIS for EXIF
+locations. EXIF coordinates are stored as indexed `geometry(PointZ, 4326)`
+for map and proximity queries.
+
+## Run locally
 
 ```bash
 docker compose up --build
 ```
 
-The local frontend uses an intentionally local-only development identity
-(`developer@localhost`), so uploads and comments work without Passmower. The
-token is only configured in `docker-compose.yaml`; Kubernetes continues to use
-OIDC.
+Open [localhost:3000](http://localhost:3000). Compose supplies a local development
+identity (`developer@localhost`) with upload, comment, and board-admin access.
+The MinIO console is at [localhost:9001](http://localhost:9001)
+(`minioadmin` / `minioadmin`). Browser uploads require `minio.localhost` to resolve
+to `127.0.0.1`; add it to `/etc/hosts` if needed.
 
-The YOLO tagger is optional because its CPU-only image is large. Start it when
-you need automatic tags:
+Enable the optional YOLO worker with:
 
 ```bash
 docker compose --profile ai up --build
 ```
 
-| Service | URL |
+Reset disposable local data with `docker compose down -v`.
+
+## Develop on Kubernetes
+
+The [Helm chart](chart/) targets Codemowers Cloud. Inspect the target cluster's
+admission policies for platform defaults and requirements; keep those settings
+out of application configuration. Namespace lifecycle belongs to the platform.
+
+Skaffold builds and pushes images using your local Docker credentials. Configure
+your own registry namespace for the context you use, for example:
+
+```bash
+skaffold config set \
+    --kube-context 'admin@ee-west-1.codemowers.io' \
+    default-repo zot.ee-west-1.codemowers.io/YOUR-NAMESPACE
+
+docker login zot.ee-west-1.codemowers.io
+skaffold dev --kube-context 'admin@ee-west-1.codemowers.io'
+```
+
+The `lolcatz` deployment namespace needs a `zot-pull-secret` that can pull your
+images. Open the application through its Ingress hostname. Skaffold port-forwards
+are for debugging individual HTTPS services.
+
+[Chart values](chart/values.yaml) define image overrides and optional components.
+[CI](.github/workflows/images.yaml) tests the application and publishes
+`ghcr.io/codemowers/lolcatz-<service>` images from `main`, tagged `latest` and with
+the commit SHA. Version tags also publish release tags. The `release-values`
+artifact pins image digests and records the source revision; use the chart from
+that revision with those values. Public packages need no pull credentials;
+private packages require `imagePullSecrets`.
+
+## Authentication
+
+Passmower is the single OIDC issuer. NextAuth owns authorization-code/PKCE login
+and renewal, retaining refresh and ID tokens in its encrypted HttpOnly cookie.
+The browser receives the access token and calls each API directly. APIs verify
+the signature, issuer, expiry, and public-origin-plus-`/api` audience, then check
+operation scopes and ownership.
+
+| Operation | Required scope |
 |---|---|
-| Frontend | http://localhost:3000 |
-| Uploader | http://localhost:8081 |
-| Browse | http://localhost:8082 |
-| Search | http://localhost:8083 |
-| Comments | http://localhost:8084 |
-| Minio console | http://localhost:9001 (minioadmin/minioadmin) |
+| List own uploads | `lolcatz:images:read` |
+| Upload or delete own images | `lolcatz:images:write` |
+| Post comments | `lolcatz:comments:write` |
+| Manage boards | `lolcatz:boards:write` and `github.com:codemowers:admins` membership |
 
-To reset local data, run `docker compose down -v`.
+Browse and search are public. Login links the verified ID-token email and subject
+to a local user; API requests resolve ownership from that subject. Client secrets
+and long-lived storage credentials stay server-side. New upload clients use
+`/api/upload/presign` followed by `/api/upload/confirm`.
 
-## In-cluster dev (skaffold + kaniko)
+## Image processing and exercises
 
-Builds run inside the cluster via kaniko, push to `zot.ee-lte-1.codemowers.io`.
+Uploads publish keyed events to `lolcatz-images`. EXIF, OCR, YOLO, and thumbnail
+workers use independent consumer groups and commit offsets after processing.
+YOLO publishes replacement detections to `lolcatz-tags`; deletion tombstones
+retire derived data. Image bytes stay in S3 and metadata in PostgreSQL.
 
-### Prerequisites
+To replay a worker after changing its model, stop its consumer group, rewind its
+Kafka offsets, and restore its previous replica count. Use the cluster's Kafka
+credentials and TLS trust. Bump the producer version to identify stale results;
+thumbnail output changes also require a new cache URL/storage version.
 
-1. Get a zot API key: https://zot.ee-lte-1.codemowers.io → User Settings → API Keys
+- [Paws or Claws](exercises/paws-or-claws.md): real-time voting.
+- [Caption correction](exercises/caption-correction.md): build an LLM worker using
+  OCR and YOLO output while preserving the original caption.
+- [InsightFace](exercises/insight-face.md): consume person detections and implement
+  private face embeddings and similarity search. This optional implementation is
+  participant work and is excluded from default builds.
 
-2. Create the push secret:
+## Checks
+
+Dockerfiles live in `services/` and use the repository root as their build context.
+Go services share [one module](services/go.mod); search uses
+[Rust/Rocket](services/search/). Compose provides the databases and dependencies
+for integration tests:
+
 ```bash
-kubectl create ns lolcatz 2>/dev/null || true
-kubectl create secret docker-registry zot-push-secret \
-  -n lolcatz \
-  --docker-server=zot.ee-lte-1.codemowers.io \
-  --docker-username=<your-email> \
-  --docker-password=<your-zot-api-key> \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-# Skaffold/Kaniko needs an Opaque secret containing config.json.
-kubectl get secret zot-push-secret -n lolcatz \
-  -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | \
-  kubectl create secret generic zot-kaniko-config -n lolcatz \
-    --from-file=config.json=/dev/stdin
+docker compose up --build -d
+docker compose run --build --rm frontend-tests
+docker compose run --build --rm go-tests
+docker compose run --build --rm search-tests
+docker compose run --rm node-tools node test/integration.mjs
 ```
 
-3. Run skaffold:
-```bash
-SKAFFOLD_CACHE_FILE=/tmp/skaffold-cache.json \
-SKAFFOLD_CONFIG=/tmp/skaffold-global.yaml \
-skaffold dev --build-concurrency=1
-```
+For frontend unit and browser checks, run `npm ci`, `npm test`,
+`npx playwright install chromium`, and `npm run test:browser` from
+`services/frontend/`. Python worker unit tests run with
+`PYTHONPATH=services python3 -m unittest discover -s services/tests` after installing
+the worker dependencies. See [CI](.github/workflows/images.yaml) for the complete
+check commands.
 
-## CI (Woodpecker)
+Application metrics and health checks use internal HTTP port `9090` (`/metrics`
+and `/health`). The chart includes [PodMonitors](chart/templates/metrics.yaml)
+and [alerts](chart/templates/metrics-alerts.yaml) when their APIs are available.
+Run `sh test/monitoring/check.sh` to validate the alert rules with Helm, Docker,
+and PyYAML installed.
 
-Woodpecker at https://woodpecker.codemowers.io builds and pushes all images on push to `main`.
-
-Required Woodpecker secret: `zot_docker_config` — a base64-encoded dockerconfig JSON:
-```json
-{"auths":{"zot.ee-lte-1.codemowers.io":{"username":"<email>","password":"<api-key>"}}}
-```
+This is a recreatable demo. Services initialize a fresh schema; reset incompatible
+data when changing it.
