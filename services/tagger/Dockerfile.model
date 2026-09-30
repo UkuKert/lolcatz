@@ -1,8 +1,0 @@
-FROM curlimages/curl:8.11.1 AS downloader
-
-WORKDIR /download
-ARG YOLO_MODEL_URL=https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt
-RUN curl --fail --location --show-error --silent --output yolov8n.pt "${YOLO_MODEL_URL}"
-
-FROM alpine:3.21
-COPY --from=downloader /download/yolov8n.pt /yolov8n.pt

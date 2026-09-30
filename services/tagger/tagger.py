@@ -1,20 +1,18 @@
 """
 Image tagger — consumes lolcatz-images Kafka topic, runs YOLO on each image,
-writes tags back to Postgres and publishes to lolcatz-tags topic.
+stores detections in Postgres and publishes all annotations to lolcatz-tags.
 """
 
 import json
 import logging
 import os
+from pathlib import Path
 import io
-import psycopg2
-import boto3
-from PIL import Image, ImageOps
-from botocore.client import Config
-from confluent_kafka import Consumer, Producer, KafkaError
-from ultralytics import YOLO
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Recorded on every row written. Bump it (or set PRODUCER_VERSION) when the
+# model changes, so stale rows can be found and replayed selectively.
+PRODUCER_VERSION = os.environ.get("PRODUCER_VERSION", "yolov8n-1")
+
 log = logging.getLogger(__name__)
 
 
@@ -29,105 +27,117 @@ def get_env(k: str, default: str) -> str:
     return os.environ.get(k, default)
 
 
-def make_s3():
-    endpoint = must_env("S3_ENDPOINT")
-    if not endpoint.startswith("http"):
-        endpoint = "http://" + endpoint
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=must_env("S3_ACCESS_KEY"),
-        aws_secret_access_key=must_env("S3_SECRET_KEY"),
-        config=Config(signature_version="s3v4"),
-        region_name="us-east-1",
+def read_image(s3, bucket: str, object_key: str):
+    from PIL import Image, ImageOps
+
+    response = s3.get_object(Bucket=bucket, Key=object_key)
+    with Image.open(io.BytesIO(response["Body"].read())) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.load()
+    return image
+
+
+def detect_annotations(model, image, confidence: float) -> list[dict]:
+    """Return every accepted normalized detection, regardless of class."""
+    results = model(image, verbose=False)
+    detections: list[dict] = []
+    for result in results:
+        for box in result.boxes:
+            score = float(box.conf)
+            if score < confidence:
+                continue
+            label = model.names[int(box.cls)]
+            x1, y1, x2, y2 = (float(value) for value in box.xyxyn[0].tolist())
+            detections.append({
+                "label": label,
+                "confidence": score,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+            })
+    return detections
+
+
+def process_message(message, db, s3, bucket, model, confidence, producer, topic_out):
+    payload = message.value()
+    # Compacted-topic tombstones retire deleted images. Derived rows are
+    # already removed by the image foreign key's ON DELETE CASCADE.
+    if payload is None:
+        key = message.key()
+        if key is None:
+            raise ValueError("image tombstone has no key")
+        producer.produce(topic_out, key=key, value=None)
+        return
+    event = json.loads(payload)
+    image_id = event["id"]
+    with db.cursor() as cur:
+        cur.execute("SELECT board FROM images WHERE id = %s LIMIT 1", (image_id,))
+        image_row = cur.fetchone()
+    if image_row is None:
+        return
+    object_key = f"{image_row[0]}/{image_id}"
+    image = read_image(s3, bucket, object_key)
+    detections = detect_annotations(model, image, confidence)
+
+    # Keep every above-threshold detection. Browse/search derive a compact tag
+    # list from the highest-confidence annotation for each label.
+    with db, db.cursor() as cur:
+        cur.execute("DELETE FROM image_annotations WHERE image_id = %s", (image_id,))
+        if detections:
+            cur.executemany(
+                """INSERT INTO image_annotations
+                   (image_id, label, confidence, x1, y1, x2, y2, producer_version)
+                   VALUES (%(image_id)s, %(label)s, %(confidence)s, %(x1)s, %(y1)s, %(x2)s, %(y2)s, %(producer_version)s)""",
+                [dict(detection, image_id=image_id, producer_version=PRODUCER_VERSION)
+                 for detection in detections],
+            )
+        cur.execute(
+            """SELECT id, label, confidence, x1, y1, x2, y2
+               FROM image_annotations WHERE image_id = %s
+               ORDER BY id""",
+            (image_id,),
+        )
+        annotations = {}
+        for row in cur.fetchall():
+            annotations.setdefault(row[1], []).append({
+                "id": row[0], "confidence": row[2],
+                "bbox": [row[3], row[4], row[5], row[6]],
+            })
+
+    producer.produce(
+        topic_out,
+        key=image_id.encode(),
+        value=json.dumps(annotations).encode(),
     )
 
 
-def _number(value):
-    try:
-        return round(float(value), 6)
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
-
-
-def _text(value):
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
-    return str(value).strip(" \x00") if value is not None else ""
-
-
-def _coordinate(values, reference):
-    if not values or len(values) != 3:
-        return None
-    degrees = _number(values[0])
-    minutes = _number(values[1])
-    seconds = _number(values[2])
-    if None in (degrees, minutes, seconds):
-        return None
-    coordinate = degrees + minutes / 60 + seconds / 3600
-    if _text(reference).upper() in ("S", "W"):
-        coordinate *= -1
-    return round(coordinate, 7)
-
-
-def extract_metadata(image):
-    """Return useful EXIF fields while excluding device/owner serial data."""
-    metadata = {"width": image.width, "height": image.height}
-    exif = image.getexif()
-    if not exif:
-        return metadata
-
-    text_fields = {
-        271: "camera_make",
-        272: "camera_model",
-        305: "software",
-        36867: "taken_at",
-        36881: "timezone",
-        42036: "lens_model",
-    }
-    number_fields = {
-        274: "orientation",
-        33434: "exposure_seconds",
-        33437: "f_number",
-        34855: "iso",
-        37386: "focal_length_mm",
-    }
-    for tag, name in text_fields.items():
-        value = _text(exif.get(tag))
-        if value:
-            metadata[name] = value
-    for tag, name in number_fields.items():
-        value = _number(exif.get(tag))
-        if value is not None:
-            metadata[name] = value
-
-    try:
-        gps = exif.get_ifd(34853)
-    except (AttributeError, KeyError, TypeError):
-        gps = {}
-    latitude = _coordinate(gps.get(2), gps.get(1))
-    longitude = _coordinate(gps.get(4), gps.get(3))
-    if latitude is not None and longitude is not None:
-        location = {"latitude": latitude, "longitude": longitude}
-        altitude = _number(gps.get(6))
-        if altitude is not None:
-            location["altitude_m"] = -altitude if gps.get(5) == 1 else altitude
-        metadata["gps"] = location
-
-    return metadata
-
-
 def main():
+    import psycopg2
+    import boto3
+    from botocore.client import Config
+    from worker_runtime import consume, kafka_security, PublishError
+    from confluent_kafka import Consumer, Producer
+    from ultralytics import YOLO
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     model = YOLO(get_env("YOLO_MODEL_PATH", "yolov8n.pt"))
-    log.info("YOLO model loaded")
 
     db = psycopg2.connect(must_env("DATABASE_URL"))
     db.autocommit = True
     with db.cursor() as cur:
-        cur.execute("ALTER TABLE images ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb")
-    log.info("postgres connected")
-
-    s3 = make_s3()
+        cur.execute(Path(__file__).with_name("schema.sql").read_text())
+    endpoint = must_env("S3_ENDPOINT")
+    scheme = "https" if os.environ["S3_USE_SSL"] == "true" else "http"
+    endpoint = f"{scheme}://{endpoint}"
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=must_env("S3_ACCESS_KEY"),
+        aws_secret_access_key=must_env("S3_SECRET_KEY"),
+        config=Config(signature_version="s3v4", connect_timeout=3, read_timeout=15, retries={"max_attempts": 2}),
+        region_name=get_env("S3_REGION", "us-east-1"),
+    )
     bucket = must_env("S3_BUCKET")
     brokers = must_env("KAFKA_BROKERS")
     topic_in = get_env("KAFKA_TOPIC_IN", "lolcatz-images")
@@ -135,63 +145,37 @@ def main():
     conf_threshold = float(get_env("YOLO_CONF_THRESHOLD", "0.4"))
 
     consumer = Consumer({
+        **kafka_security(),
         "bootstrap.servers": brokers,
         "group.id": "lolcatz-tagger",
         "auto.offset.reset": "earliest",
-        "enable.auto.commit": True,
+        "enable.auto.commit": False,
+        "enable.auto.offset.store": False,
+        "max.poll.interval.ms": 900000,
     })
     consumer.subscribe([topic_in])
 
-    producer = Producer({"bootstrap.servers": brokers})
+    delivery_errors = []
+    producer = Producer({
+        **kafka_security(),
+        "bootstrap.servers": brokers,
+        "delivery.timeout.ms": 10000,
+        "on_delivery": lambda error, _message: delivery_errors.append(error) if error else None,
+    })
 
     log.info("listening on %s", topic_in)
-    while True:
-        msg = consumer.poll(timeout=1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
-                continue
-            log.error("kafka error: %s", msg.error())
-            continue
+    def process_and_publish(message):
+        delivery_errors.clear()
+        process_message(message, db, s3, bucket, model, conf_threshold, producer,
+                        topic_out)
+        if producer.flush(15) or delivery_errors:
+            raise PublishError("Kafka output delivery failed")
 
-        try:
-            event = json.loads(msg.value())
-            image_id = event["id"]
-            board = event.get("board", "b")
-            object_key = f"{board}/{image_id}"
-
-            log.info("tagging %s", image_id)
-            resp = s3.get_object(Bucket=bucket, Key=object_key)
-            img_bytes = resp["Body"].read()
-
-            # Ultralytics does not treat BytesIO as an image source. Decode
-            # the object first and normalize orientation/color for inference.
-            with Image.open(io.BytesIO(img_bytes)) as source:
-                metadata = extract_metadata(source)
-                image = ImageOps.exif_transpose(source).convert("RGB")
-                image.load()
-            results = model(image, verbose=False)
-            tags = sorted({
-                model.names[int(box.cls)]
-                for r in results
-                for box in r.boxes
-                if float(box.conf) >= conf_threshold
-            })
-            log.info("image %s -> tags %s", image_id, tags)
-
-            with db.cursor() as cur:
-                cur.execute(
-                    "UPDATE images SET tags = %s, metadata = %s::jsonb WHERE id = %s",
-                    (tags, json.dumps(metadata), image_id),
-                )
-
-            producer.produce(topic_out, key=image_id.encode(),
-                             value=json.dumps({"id": image_id, "tags": tags}).encode())
-            producer.poll(0)
-
-        except Exception as e:
-            log.exception("failed to process %s: %s", msg.offset(), e)
+    try:
+        consume(consumer, process_and_publish)
+    finally:
+        producer.flush(15)
+        db.close()
 
 
 if __name__ == "__main__":

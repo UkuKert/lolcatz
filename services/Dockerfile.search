@@ -1,0 +1,29 @@
+FROM rust:1.94.1-alpine AS source
+RUN apk add --no-cache musl-dev ca-certificates
+WORKDIR /app
+COPY services/search/Cargo.toml services/search/Cargo.lock ./
+COPY services/search/src ./src
+RUN cargo fetch --locked
+COPY services/search/tests ./tests
+COPY services/search/Rocket.toml ./
+# Integration tests use the schemas owned by the existing services.
+COPY services/uploader/schema.sql /schemas/uploader.sql
+COPY services/ocr/schema.sql /schemas/ocr.sql
+COPY services/tagger/schema.sql /schemas/tagger.sql
+
+FROM source AS tests
+RUN cargo test --locked --no-run
+ENV SEARCH_TEST_SCHEMA_DIR=/schemas
+CMD ["cargo", "test", "--locked"]
+
+FROM source AS build
+RUN cargo build --locked --release
+
+FROM scratch AS runtime
+ENV ROCKET_CONFIG=/app/Rocket.toml
+ENV PGSSLROOTCERT=/etc/ssl/certs/ca-certificates.crt
+COPY services/search/Rocket.toml /app/Rocket.toml
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /app/target/release/lolcatz-search /server
+EXPOSE 8080 9090
+ENTRYPOINT ["/server"]

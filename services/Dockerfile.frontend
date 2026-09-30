@@ -1,0 +1,32 @@
+FROM node:26-alpine AS deps
+WORKDIR /app
+COPY services/frontend/package.json services/frontend/package-lock.json* ./
+RUN npm ci
+
+FROM deps AS tests
+COPY services/frontend/ .
+CMD ["npm", "test"]
+
+FROM node:26-alpine AS builder
+WORKDIR /app
+ARG NEXT_PUBLIC_DEV_AUTH_TOKEN
+ENV NEXT_PUBLIC_DEV_AUTH_TOKEN=$NEXT_PUBLIC_DEV_AUTH_TOKEN
+COPY --from=deps /app/node_modules ./node_modules
+COPY services/frontend/ .
+RUN npm run build && chmod -R a+rX /app/.next /app/public
+
+FROM node:26-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production HOSTNAME=::
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/required-server-files.json ./.next/required-server-files.json
+COPY services/frontend/runtime.cjs services/frontend/metrics.cjs ./
+# The custom runtime is outside Next.js output tracing.
+COPY --from=deps /app/node_modules/prom-client ./node_modules/prom-client
+COPY --from=deps /app/node_modules/@opentelemetry ./node_modules/@opentelemetry
+COPY --from=deps /app/node_modules/tdigest ./node_modules/tdigest
+COPY --from=deps /app/node_modules/bintrees ./node_modules/bintrees
+EXPOSE 3000
+CMD ["node", "runtime.cjs"]

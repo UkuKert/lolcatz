@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -15,24 +15,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codemowers/lolcatz/services/internal/auth"
+	"github.com/codemowers/lolcatz/services/internal/platform"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+	_ "github.com/lib/pq"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
 )
 
 var (
-	db          *sql.DB
-	minioClient *minio.Client
-	publicMinio *minio.Client
-	kafkaWriter *kafka.Writer
-	verifier    *gooidc.IDTokenVerifier
-	bucket      = mustEnv("S3_BUCKET")
-	s3PublicURL = mustEnv("S3_PUBLIC_URL")
-	devToken    = os.Getenv("DEV_AUTH_TOKEN")
+	db            *sql.DB
+	minioClient   *minio.Client
+	kafkaWriter   *kafka.Writer
+	verifier      *gooidc.IDTokenVerifier
+	loginVerifier *gooidc.IDTokenVerifier
+	bucket        = mustEnv("S3_BUCKET")
+	devToken      = os.Getenv("DEV_AUTH_TOKEN")
+	cache         *redis.Client
 )
+
+func init() {
+	log.SetFlags(0)
+}
 
 type ImageEvent struct {
 	ID          string    `json:"id"`
@@ -44,14 +51,16 @@ type ImageEvent struct {
 }
 
 type UploadedImage struct {
-	ID          string    `json:"id"`
-	Board       string    `json:"board"`
-	Title       string    `json:"title"`
-	Filename    string    `json:"filename"`
-	ContentType string    `json:"content_type"`
-	Tags        []string  `json:"tags"`
-	UploadedAt  time.Time `json:"uploaded_at"`
-	ImageURL    string    `json:"image_url"`
+	CommentCount int64           `json:"comment_count"`
+	ID           string          `json:"id"`
+	Board        string          `json:"board"`
+	Title        string          `json:"title"`
+	Filename     string          `json:"filename"`
+	ContentType  string          `json:"content_type"`
+	Tags         json.RawMessage `json:"tags"`
+	Annotations  json.RawMessage `json:"annotations"`
+	UploadedAt   time.Time       `json:"uploaded_at"`
+	ImageURL     string          `json:"image_url"`
 }
 
 func mustEnv(k string) string {
@@ -76,7 +85,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("oidc provider: %v", err)
 		}
-		verifier = provider.Verifier(&gooidc.Config{SkipClientIDCheck: true})
+		verifier = provider.Verifier(&gooidc.Config{ClientID: mustEnv("OIDC_AUDIENCE")})
+		loginVerifier = provider.Verifier(&gooidc.Config{ClientID: mustEnv("OIDC_CLIENT_ID")})
 	} else {
 		log.Printf("WARNING: development authentication is enabled")
 	}
@@ -88,145 +98,134 @@ func main() {
 	if err = db.Ping(); err != nil {
 		log.Fatalf("db ping: %v", err)
 	}
-	if err = migrate(db); err != nil {
-		log.Fatalf("migrate: %v", err)
+	if err = initSchema(db); err != nil {
+		log.Fatalf("initialize schema: %v", err)
 	}
+	cache = redis.NewClient(&redis.Options{Addr: getEnvOr("REDIS_ADDR", "lolcatz-redis:6379"), Password: os.Getenv("REDIS_PASSWORD"), TLSConfig: platform.ClientTLS(os.Getenv("REDIS_TLS") == "true")})
 
 	minioClient, err = minio.New(mustEnv("S3_ENDPOINT"), &minio.Options{
 		Creds:  credentials.NewStaticV4(mustEnv("S3_ACCESS_KEY"), mustEnv("S3_SECRET_KEY"), ""),
-		Secure: false,
+		Secure: mustEnv("S3_USE_SSL") == "true",
+		Region: getEnvOr("S3_REGION", "us-east-1"),
 	})
 	if err != nil {
 		log.Fatalf("minio: %v", err)
 	}
-	publicEndpoint, err := url.Parse(s3PublicURL)
-	if err != nil || publicEndpoint.Host == "" {
-		log.Fatalf("invalid S3_PUBLIC_URL %q", s3PublicURL)
-	}
-	publicMinio, err = minio.New(publicEndpoint.Host, &minio.Options{
-		Creds:  credentials.NewStaticV4(mustEnv("S3_ACCESS_KEY"), mustEnv("S3_SECRET_KEY"), ""),
-		Secure: publicEndpoint.Scheme == "https",
-		Region: getEnvOr("S3_REGION", "us-east-1"),
-	})
-	if err != nil {
-		log.Fatalf("public minio: %v", err)
-	}
 
-	kafkaWriter = &kafka.Writer{
-		Addr:     kafka.TCP(getEnvOr("KAFKA_BROKERS", "")),
-		Topic:    "lolcatz-images",
-		Balancer: &kafka.LeastBytes{},
-	}
+	kafkaWriter = newEventWriter("lolcatz-images")
 	defer kafkaWriter.Close()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/upload/session", handleLogin)
 	// Step 1: browser asks for a presigned PUT URL
-	mux.HandleFunc("POST /presign", requireAuth(handlePresign))
-	mux.HandleFunc("POST /bulk", requireAuth(handleBulk))
-	mux.HandleFunc("PUT /bulk/{filename}", requireAuth(handleBulk))
-	mux.HandleFunc("PUT /bulk", requireAuth(handleBulk))
-	mux.HandleFunc("PUT /bulk/", requireAuth(handleBulk))
+	mux.HandleFunc("POST /api/upload/presign", requireAuth("lolcatz:images:write", handlePresign))
+	mux.HandleFunc("PUT /api/upload/bulk/{filename}", requireAuth("lolcatz:images:write", handleBulk))
+	mux.HandleFunc("PUT /api/upload/bulk", requireAuth("lolcatz:images:write", handleBulk))
+	mux.HandleFunc("PUT /api/upload/bulk/", requireAuth("lolcatz:images:write", handleBulk))
 	// Step 2: browser calls this after uploading to minio to register the image
-	mux.HandleFunc("POST /confirm", requireAuth(handleConfirm))
-	mux.HandleFunc("GET /me/images", requireAuth(handleMyImages))
-	mux.HandleFunc("DELETE /images/{id}", requireAuth(handleDeleteImage))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	mux.HandleFunc("POST /api/upload/confirm", requireAuth("lolcatz:images:write", handleConfirm))
+	mux.HandleFunc("GET /api/upload/me", requireAuth("lolcatz:images:read", handleCurrentUser))
+	mux.HandleFunc("GET /api/upload/me/images", requireAuth("lolcatz:images:read", handleMyImages))
+	mux.HandleFunc("DELETE /api/upload/images/{id}", requireAuth("lolcatz:images:write", handleDeleteImage))
 
-	addr := ":" + getEnvOr("PORT", "8080")
-	log.Printf("uploader listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
-}
-
-func requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || raw == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		email := ""
-		name := ""
-		if devToken != "" {
-			if raw != devToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			email = getEnvOr("DEV_AUTH_EMAIL", "developer@localhost")
-			name = getEnvOr("DEV_AUTH_NAME", "Developer")
-		} else {
-			token, err := verifier.Verify(r.Context(), raw)
-			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			var claims struct {
-				Email string `json:"email"`
-				Name  string `json:"name"`
-			}
-			if err := token.Claims(&claims); err != nil || claims.Email == "" {
-				http.Error(w, "invalid token claims", http.StatusUnauthorized)
-				return
-			}
-			email = claims.Email
-			name = claims.Name
-		}
-
-		r.Header.Set("X-User-Email", email)
-		if name == "" {
-			name = email
-		}
-		if _, err := db.ExecContext(r.Context(), `
-			INSERT INTO users (email, name) VALUES ($1, $2)
-			ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
-		`, email, name); err != nil {
-			log.Printf("upsert user: %v", err)
-		}
-		next(w, r)
+	if err := platform.Serve(mux); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS images (
-			id           TEXT PRIMARY KEY,
-			board        TEXT NOT NULL DEFAULT 'b',
-			title        TEXT NOT NULL DEFAULT '',
-			filename     TEXT NOT NULL,
-			content_type TEXT NOT NULL,
-			size         BIGINT NOT NULL DEFAULT 0,
-			author       TEXT NOT NULL DEFAULT 'Anonymous',
-			tags         TEXT[] NOT NULL DEFAULT '{}',
-			metadata     JSONB NOT NULL DEFAULT '{}',
-			uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-		ALTER TABLE images ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';
-		CREATE TABLE IF NOT EXISTS comments (
-			id         BIGSERIAL PRIMARY KEY,
-			image_id   TEXT NOT NULL REFERENCES images(id) ON DELETE CASCADE,
-			body       TEXT NOT NULL,
-			author     TEXT NOT NULL DEFAULT 'Anonymous',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-		CREATE TABLE IF NOT EXISTS users (
-			email TEXT PRIMARY KEY,
-			name  TEXT NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS comments_image_id ON comments(image_id);
-		CREATE INDEX IF NOT EXISTS images_board ON images(board, uploaded_at DESC);
-		CREATE INDEX IF NOT EXISTS images_tags ON images USING GIN(tags);
-	`)
+// Compaction and tombstones require every event for a key in the same partition.
+func newEventWriter(topic string) *kafka.Writer {
+	return &kafka.Writer{
+		Transport:    &kafka.Transport{SASL: platform.KafkaSASL(), TLS: platform.ClientTLS(os.Getenv("KAFKA_TLS") == "true")},
+		WriteTimeout: 10 * time.Second,
+		Addr:         kafka.TCP(getEnvOr("KAFKA_BROKERS", "")),
+		Topic:        topic,
+		Balancer:     &kafka.Hash{},
+	}
+}
+
+func invalidateBoards(ctx context.Context) {
+	if err := cache.Incr(ctx, "lolcatz:boards:generation").Err(); err != nil {
+		log.Printf("invalidate boards cache: %v", err)
+	}
+}
+
+// publishUpload describes the image; consumers choose which formats to process.
+func publishUpload(ctx context.Context, event ImageEvent) {
+	if kafkaWriter.Addr.String() == "" {
+		return
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("encode event %s: %v", event.ID, err)
+		return
+	}
+	message := kafka.Message{Key: []byte(event.ID), Value: payload}
+
+	if err := kafkaWriter.WriteMessages(ctx, message); err != nil {
+		log.Printf("kafka write (non-fatal): %v", err)
+	}
+
+}
+
+func requireAuth(requiredScope string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || raw == "" {
+			auth.InvalidToken(w)
+			return
+		}
+		subject := ""
+		if devToken != "" {
+			if raw != devToken {
+				auth.InvalidToken(w)
+				return
+			}
+		} else {
+			token, valid := auth.Verify(w, r, verifier, raw, requiredScope)
+			if !valid {
+				return
+			}
+			subject = token.Subject
+		}
+		authenticated, valid := auth.AuthenticateUser(w, r, db, subject, devToken != "")
+		if valid {
+			next(w, authenticated)
+		}
+	}
+}
+
+//go:embed schema.sql
+var schema string
+
+func initSchema(db *sql.DB) error {
+	_, err := db.Exec(schema)
 	return err
+}
+
+func handleCurrentUser(w http.ResponseWriter, r *http.Request) {
+	user := auth.RequestUser(r)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(map[string]any{"id": user.ID, "name": user.Name})
 }
 
 func handleMyImages(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.QueryContext(r.Context(), `
-		SELECT id, board, title, filename, content_type, tags, uploaded_at
-		FROM images
-		WHERE author = $1
-		ORDER BY uploaded_at DESC
+		SELECT i.id, i.board, i.title, i.filename, i.content_type,
+		       COALESCE(json_agg(json_build_object('name', t.tag, 'confidence', t.confidence) ORDER BY t.confidence DESC, t.tag) FILTER (WHERE t.tag IS NOT NULL), '[]') AS tags,
+               COALESCE((SELECT json_agg(json_build_object(
+                   'id', a.id, 'label', a.label, 'confidence', a.confidence,
+                   'bbox', json_build_array(a.x1, a.y1, a.x2, a.y2)) ORDER BY a.id)
+                   FROM image_annotations a WHERE a.image_id = i.id), '[]') AS annotations,
+		       i.uploaded_at,
+               (SELECT COUNT(*) FROM comments c WHERE c.image_id = i.id) AS comment_count
+		FROM images i LEFT JOIN (SELECT image_id, label AS tag, MAX(confidence) AS confidence FROM image_annotations GROUP BY image_id, label) t ON t.image_id = i.id
+		WHERE i.user_id = $1
+		GROUP BY i.id
+		ORDER BY i.uploaded_at DESC
 		LIMIT 100
-	`, r.Header.Get("X-User-Email"))
+	`, auth.RequestUser(r).ID)
 	if err != nil {
 		log.Printf("list own images: %v", err)
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -238,9 +237,10 @@ func handleMyImages(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var img UploadedImage
 		if err := rows.Scan(&img.ID, &img.Board, &img.Title, &img.Filename,
-			&img.ContentType, pq.Array(&img.Tags), &img.UploadedAt); err != nil {
+			&img.ContentType, &img.Tags, &img.Annotations, &img.UploadedAt, &img.CommentCount); err != nil {
 			log.Printf("scan own image: %v", err)
-			continue
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
 		}
 		img.ImageURL = "/api/browse/media/" + url.PathEscape(img.ID)
 		images = append(images, img)
@@ -257,12 +257,12 @@ func handleMyImages(w http.ResponseWriter, r *http.Request) {
 
 func handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	author := r.Header.Get("X-User-Email")
+	userID := auth.RequestUser(r).ID
 
 	var board string
 	err := db.QueryRowContext(r.Context(), `
-		SELECT board FROM images WHERE id = $1 AND author = $2
-	`, id, author).Scan(&board)
+		SELECT board FROM images WHERE id = $1 AND user_id = $2
+	`, id, userID).Scan(&board)
 	if err == sql.ErrNoRows {
 		http.Error(w, "post not found", http.StatusNotFound)
 		return
@@ -281,8 +281,8 @@ func handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := db.ExecContext(r.Context(), `
-		DELETE FROM images WHERE id = $1 AND author = $2
-	`, id, author)
+		DELETE FROM images WHERE id = $1 AND user_id = $2
+	`, id, userID)
 	if err != nil {
 		log.Printf("delete post %s: %v", id, err)
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -292,6 +292,28 @@ func handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 	if err != nil || deleted != 1 {
 		http.Error(w, "post not found", http.StatusNotFound)
 		return
+	}
+
+	invalidateBoards(r.Context())
+
+	// Thumbnail generation holds a shared lock on the image row. Once the
+	// DELETE completes, no generator can recreate these cached derivatives.
+	for _, variant := range []string{"256", "512", "preview"} {
+		key := fmt.Sprintf("_thumbnails/v1/%s/%s.jpg", id, variant)
+		if err := minioClient.RemoveObject(r.Context(), bucket, key, minio.RemoveObjectOptions{}); err != nil {
+			log.Printf("delete thumbnail %s (non-fatal): %v", key, err)
+		}
+	}
+
+	// lolcatz-images is compacted, so the only way to retire an image from the
+	// log is a tombstone: same key, null value. Without this a replay would keep
+	// dispatching work for objects that no longer exist.
+	if kafkaWriter.Addr.String() != "" {
+		tombstone := kafka.Message{Key: []byte(id), Value: nil}
+		if err := kafkaWriter.WriteMessages(context.Background(), tombstone); err != nil {
+			log.Printf("kafka tombstone %s (non-fatal): %v", id, err)
+		}
+
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -321,11 +343,14 @@ func handlePresign(w http.ResponseWriter, r *http.Request) {
 		req.Board = "b"
 	}
 
+	if !requireBoard(w, r, req.Board) {
+		return
+	}
 	id := uuid.New().String()
 	objectKey := fmt.Sprintf("%s/%s", req.Board, id)
 
 	// Presigned PUT — browser uploads directly to minio
-	putURL, err := publicMinio.PresignedPutObject(
+	putURL, err := minioClient.PresignedPutObject(
 		r.Context(), bucket, objectKey, 15*time.Minute,
 	)
 	if err != nil {
@@ -335,7 +360,7 @@ func handlePresign(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Public GET URL (no signing needed — bucket is public)
-	publicGet := fmt.Sprintf("%s/%s/%s", s3PublicURL, bucket, objectKey)
+	publicGet := fmt.Sprintf("%s/%s/%s", minioClient.EndpointURL().String(), bucket, objectKey)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -349,37 +374,23 @@ func handlePresign(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBulk(w http.ResponseWriter, r *http.Request) {
-	var file io.Reader
-	var closer io.Closer
 	filename := r.PathValue("filename")
 	contentType := r.Header.Get("Content-Type")
 	size := r.ContentLength
-	if r.Method == http.MethodPut {
-		file, closer = r.Body, r.Body
-		if filename == "" {
-			filename = "upload-" + uuid.New().String() + ".jpg"
-		}
-	} else {
-		upload, header, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, "multipart field 'file' is required", 400)
-			return
-		}
-		file, closer, filename, size = upload, upload, header.Filename, header.Size
-		if contentType == "" {
-			contentType = header.Header.Get("Content-Type")
-		}
+	file := r.Body
+	if filename == "" {
+		filename = "upload-" + uuid.New().String() + ".jpg"
 	}
-	defer closer.Close()
+	defer file.Close()
 	filename = filepath.Base(filename)
-	board := r.FormValue("board")
-	if r.Method == http.MethodPut {
-		board = r.URL.Query().Get("board")
-	}
+	board := r.URL.Query().Get("board")
 	if board == "" {
 		board = "b"
 	}
-	title := r.FormValue("title")
+	if !requireBoard(w, r, board) {
+		return
+	}
+	title := r.URL.Query().Get("title")
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))
 	}
@@ -395,15 +406,16 @@ func handleBulk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage upload failed", 500)
 		return
 	}
-	if _, err = db.ExecContext(r.Context(), `INSERT INTO images (id,board,title,filename,content_type,size,author) VALUES ($1,$2,$3,$4,$5,$6,$7)`, id, board, title, filename, contentType, info.Size, r.Header.Get("X-User-Email")); err != nil {
+	// Derived data is written later by the exif/ocr/tagger consumers.
+	if _, err = db.ExecContext(r.Context(), `INSERT INTO images (id,board,title,filename,content_type,size,author,user_agent,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, board, title, filename, contentType, info.Size, auth.RequestUser(r).Name, r.UserAgent(), auth.RequestUser(r).ID); err != nil {
 		http.Error(w, "db insert failed", 500)
 		return
 	}
-	event := ImageEvent{ID: id, Filename: filename, ContentType: contentType, Board: board, Title: title, UploadedAt: time.Now()}
-	payload, _ := json.Marshal(event)
-	if kafkaWriter.Addr.String() != "" {
-		_ = kafkaWriter.WriteMessages(r.Context(), kafka.Message{Key: []byte(id), Value: payload})
-	}
+	invalidateBoards(r.Context())
+	publishUpload(r.Context(), ImageEvent{
+		ID: id, Filename: filename, ContentType: contentType,
+		Board: board, Title: title, UploadedAt: time.Now(),
+	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"id": id, "filename": filename})
 }
@@ -421,6 +433,9 @@ func handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !requireBoard(w, r, req.Board) {
+		return
+	}
 	objectKey := fmt.Sprintf("%s/%s", req.Board, req.ID)
 
 	// Verify object actually exists in minio
@@ -430,34 +445,40 @@ func handleConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "object not found in storage", 404)
 		return
 	}
-
+	// Derived data is written later by the exif/ocr/tagger consumers.
 	_, err = db.ExecContext(r.Context(),
-		`INSERT INTO images (id, board, title, filename, content_type, size, author)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		`INSERT INTO images (id, board, title, filename, content_type, size, author, user_agent, user_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		 ON CONFLICT (id) DO NOTHING`,
 		req.ID, req.Board, req.Title, req.Filename, req.ContentType, info.Size,
-		r.Header.Get("X-User-Email"),
+		auth.RequestUser(r).Name, r.UserAgent(), auth.RequestUser(r).ID,
 	)
 	if err != nil {
 		log.Printf("db insert: %v", err)
 		http.Error(w, "db error", 500)
 		return
 	}
+	invalidateBoards(r.Context())
 
-	event := ImageEvent{
+	publishUpload(context.Background(), ImageEvent{
 		ID: req.ID, Filename: req.Filename, ContentType: req.ContentType,
 		Board: req.Board, Title: req.Title, UploadedAt: time.Now(),
-	}
-	payload, _ := json.Marshal(event)
-	if kafkaWriter.Addr.String() != "" {
-		if err := kafkaWriter.WriteMessages(context.Background(), kafka.Message{
-			Key: []byte(req.ID), Value: payload,
-		}); err != nil {
-			log.Printf("kafka write (non-fatal): %v", err)
-		}
-	}
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"id": req.ID})
+}
+
+func requireBoard(w http.ResponseWriter, r *http.Request, board string) bool {
+	var exists bool
+	if err := db.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM boards WHERE id=$1)`, board).Scan(&exists); err != nil {
+		http.Error(w, "db error", 500)
+		return false
+	}
+	if !exists {
+		http.Error(w, "unknown board", 400)
+		return false
+	}
+	return true
 }

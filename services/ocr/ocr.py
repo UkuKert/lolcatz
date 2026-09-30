@@ -1,19 +1,16 @@
 """OCR worker for captioned lolcat images."""
 
+from pathlib import Path
 import io
 import json
 import logging
 import os
 import re
+import subprocess
 
-import boto3
-import psycopg2
-import pytesseract
-from PIL import Image, ImageOps
-from botocore.client import Config
-from confluent_kafka import Consumer, KafkaError
+# Recorded on every row written; bump when extraction changes.
+PRODUCER_VERSION = os.environ.get("PRODUCER_VERSION", "tesseract-1")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 
@@ -22,20 +19,6 @@ def env(name: str, default: str | None = None) -> str:
     if not value:
         raise RuntimeError(f"required env var {name} is not set")
     return value
-
-
-def make_s3():
-    endpoint = env("S3_ENDPOINT")
-    if not endpoint.startswith("http"):
-        endpoint = "http://" + endpoint
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=env("S3_ACCESS_KEY"),
-        aws_secret_access_key=env("S3_SECRET_KEY"),
-        config=Config(signature_version="s3v4"),
-        region_name="us-east-1",
-    )
 
 
 def sanitize_text(value: str) -> str:
@@ -54,54 +37,101 @@ def title_from_ocr(text: str) -> str:
     return ""
 
 
+def extract_text(image_bytes: bytes, language: str) -> str:
+    from PIL import Image, ImageOps
+
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        encoded = io.BytesIO()
+        image.save(encoded, format="PNG")
+
+    result = subprocess.run(
+        ["tesseract", "stdin", "stdout", "-l", language],
+        input=encoded.getvalue(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        timeout=45,
+    )
+    return sanitize_text(result.stdout.decode("utf-8", errors="replace"))
+
+
+def process_message(message, db, s3, bucket: str, language: str) -> None:
+    payload = message.value()
+    # Compacted-topic tombstones retire deleted images. Derived rows are
+    # already removed by the image foreign key's ON DELETE CASCADE.
+    if payload is None:
+        return
+    event = json.loads(payload)
+    image_id = event["id"]
+    with db.cursor() as cur:
+        cur.execute("SELECT board FROM images WHERE id = %s LIMIT 1", (image_id,))
+        image_row = cur.fetchone()
+    if image_row is None:
+        return
+    object_key = f"{image_row[0]}/{image_id}"
+    image_bytes = s3.get_object(Bucket=bucket, Key=object_key)["Body"].read()
+    text = extract_text(image_bytes, language)
+
+    # derived_title stays in this service's own table; browse falls back to it
+    # when the uploader's title is blank. Writing images.title from here would
+    # mean two services owning one column.
+    with db.cursor() as cur:
+        cur.execute(
+            """INSERT INTO image_ocr (image_id, text, language, derived_title, producer_version)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (image_id) DO UPDATE SET
+                   text = EXCLUDED.text,
+                   language = EXCLUDED.language,
+                   derived_title = EXCLUDED.derived_title,
+                   producer_version = EXCLUDED.producer_version,
+                   processed_at = NOW()""",
+            (image_id, text, language, title_from_ocr(text) or None, PRODUCER_VERSION),
+        )
+
+
 def main():
+    import boto3
+    import psycopg2
+    from botocore.client import Config
+    from worker_runtime import consume, kafka_security
+    from confluent_kafka import Consumer
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     db = psycopg2.connect(env("DATABASE_URL"))
     db.autocommit = True
     with db.cursor() as cur:
-        cur.execute("ALTER TABLE images ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb")
+        cur.execute(Path(__file__).with_name("schema.sql").read_text())
 
-    s3 = make_s3()
+    endpoint = env("S3_ENDPOINT")
+    scheme = "https" if os.environ["S3_USE_SSL"] == "true" else "http"
+    endpoint = f"{scheme}://{endpoint}"
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=env("S3_ACCESS_KEY"),
+        aws_secret_access_key=env("S3_SECRET_KEY"),
+        config=Config(signature_version="s3v4", connect_timeout=3, read_timeout=15, retries={"max_attempts": 2}),
+        region_name=env("S3_REGION", "us-east-1"),
+    )
     bucket = env("S3_BUCKET")
     language = env("OCR_LANGUAGE", "eng")
     consumer = Consumer({
+        **kafka_security(),
         "bootstrap.servers": env("KAFKA_BROKERS"),
         "group.id": env("OCR_GROUP", "lolcatz-ocr"),
         "auto.offset.reset": "earliest",
-        "enable.auto.commit": True,
+        "enable.auto.commit": False,
+        "enable.auto.offset.store": False,
+        "max.poll.interval.ms": 900000,
     })
     consumer.subscribe([env("KAFKA_TOPIC", "lolcatz-images")])
     log.info("listening for OCR jobs using tesseract language %s", language)
 
-    while True:
-        message = consumer.poll(1.0)
-        if message is None:
-            continue
-        if message.error():
-            if message.error().code() != KafkaError._PARTITION_EOF:
-                log.error("kafka error: %s", message.error())
-            continue
-        try:
-            event = json.loads(message.value())
-            image_id = event["id"]
-            object_key = f"{event.get('board', 'b')}/{image_id}"
-            image_bytes = s3.get_object(Bucket=bucket, Key=object_key)["Body"].read()
-            with Image.open(io.BytesIO(image_bytes)) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
-                text = sanitize_text(pytesseract.image_to_string(image, lang=language))
-
-            with db.cursor() as cur:
-                cur.execute(
-                    """UPDATE images
-                       SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
-                           title = CASE WHEN NULLIF(BTRIM(title), '') IS NULL
-                                        THEN COALESCE(NULLIF(%s, ''), title)
-                                        ELSE title END
-                       WHERE id = %s""",
-                    (json.dumps({"ocr_text": text, "ocr_language": language, "ocr_status": "complete"}), title_from_ocr(text), image_id),
-                )
-            log.info("OCR processed %s (%d characters)", image_id, len(text))
-        except Exception:
-            log.exception("failed to OCR message at offset %s", message.offset())
+    try:
+        consume(consumer, lambda message: process_message(message, db, s3, bucket, language))
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 *.o
 *.a
+__pycache__/
+*.py[cod]
 /browse/browse
 /comments/comments
 /search/search
 /uploader/uploader
+/admin/admin
+/exif/exif

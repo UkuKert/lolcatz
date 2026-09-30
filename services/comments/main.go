@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/codemowers/lolcatz/services/internal/auth"
+	"github.com/codemowers/lolcatz/services/internal/platform"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	_ "github.com/lib/pq"
 )
@@ -35,6 +37,7 @@ func getEnvOr(k, def string) string {
 }
 
 func main() {
+	log.SetFlags(0)
 	var err error
 
 	if devToken == "" {
@@ -42,7 +45,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("oidc provider: %v", err)
 		}
-		verifier = provider.Verifier(&gooidc.Config{SkipClientIDCheck: true})
+		verifier = provider.Verifier(&gooidc.Config{ClientID: mustEnv("OIDC_AUDIENCE")})
 	} else {
 		log.Printf("WARNING: development authentication is enabled")
 	}
@@ -56,61 +59,37 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /images/{id}/comments", requireAuth(handlePost))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	mux.HandleFunc("POST /api/comments/images/{id}/comments", requireAuth("lolcatz:comments:write", handlePost))
 
-	addr := ":" + getEnvOr("PORT", "8080")
-	log.Printf("comments listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
-}
-
-func requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || raw == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if devToken != "" {
-			if raw != devToken {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			email := getEnvOr("DEV_AUTH_EMAIL", "developer@localhost")
-			name := getEnvOr("DEV_AUTH_NAME", "Developer")
-			r.Header.Set("X-User-Email", email)
-			upsertUser(r, email, name)
-			next(w, r)
-			return
-		}
-		token, err := verifier.Verify(r.Context(), raw)
-		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var claims struct {
-			Email string `json:"email"`
-			Name  string `json:"name"`
-		}
-		if err := token.Claims(&claims); err != nil || claims.Email == "" {
-			http.Error(w, "invalid token claims", http.StatusUnauthorized)
-			return
-		}
-		r.Header.Set("X-User-Email", claims.Email)
-		if claims.Name == "" {
-			claims.Name = claims.Email
-		}
-		upsertUser(r, claims.Email, claims.Name)
-		next(w, r)
+	if err := platform.Serve(mux); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func upsertUser(r *http.Request, email, name string) {
-	if _, err := db.ExecContext(r.Context(), `
-		INSERT INTO users (email, name) VALUES ($1, $2)
-		ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
-	`, email, name); err != nil {
-		log.Printf("upsert user: %v", err)
+func requireAuth(requiredScope string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || raw == "" {
+			auth.InvalidToken(w)
+			return
+		}
+		subject := ""
+		if devToken != "" {
+			if raw != devToken {
+				auth.InvalidToken(w)
+				return
+			}
+		} else {
+			token, valid := auth.Verify(w, r, verifier, raw, requiredScope)
+			if !valid {
+				return
+			}
+			subject = token.Subject
+		}
+		authenticated, valid := auth.AuthenticateUser(w, r, db, subject, devToken != "")
+		if valid {
+			next(w, authenticated)
+		}
 	}
 }
 
@@ -123,15 +102,15 @@ func handlePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body required", 400)
 		return
 	}
-	author := r.Header.Get("X-User-Email")
+	author := auth.RequestUser(r).Name
 	if author == "" {
 		author = "Anonymous"
 	}
 
 	var id int64
 	err := db.QueryRowContext(r.Context(),
-		`INSERT INTO comments (image_id, body, author) VALUES ($1,$2,$3) RETURNING id`,
-		imageID, body.Body, author,
+		`INSERT INTO comments (image_id, body, author, user_id) VALUES ($1,$2,$3,$4) RETURNING id`,
+		imageID, body.Body, author, auth.RequestUser(r).ID,
 	).Scan(&id)
 	if err != nil {
 		log.Printf("db insert: %v", err)
