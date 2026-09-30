@@ -1,0 +1,14 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: lolcatz-database-app
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  name: lolcatz
+  owner: lolcatz
+  cluster:
+    name: lolcatz-database
+  extensions:
+    - name: vector
+    - name: postgis

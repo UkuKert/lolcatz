@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-uploader
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-uploader
+  template:
+    metadata:
+      labels:
+        app: lolcatz-uploader
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: lolcatz-uploader-internal-tls
+      containers:
+        - name: uploader
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.uploader.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+            - name: https
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+          volumeMounts:
+            - name: server-tls
+              mountPath: /etc/server-tls
+              readOnly: true
+          env:
+            - name: KAFKA_USERNAME
+              value: lolcatz-uploader
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-uploader-kafka
+                  key: password
+            - name: TLS_CERT_FILE
+              value: /etc/server-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/server-tls/tls.key
+            - name: REDIS_TLS
+              value: "true"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-redis-password
+                  key: password
+            - name: PGSSLMODE
+              value: verify-full
+            - name: KAFKA_TLS
+              value: "true"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: REDIS_ADDR
+              value: lolcatz-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: publicEndpoint
+            - name: S3_USE_SSL
+              value: "true"
+            - name: S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: region
+            - name: S3_BUCKET
+              value: {{ .Release.Namespace }}.lolcatz
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: accessKey
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: secretKey
+            - name: KAFKA_BROKERS
+              value: lolcatz-redpanda.{{ .Release.Namespace }}.svc.cluster.local:9093
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ID
+            - name: OIDC_CLIENT_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ORIGIN
+            - name: OIDC_AUDIENCE
+              value: "$(OIDC_CLIENT_ORIGIN)/api"
+            - name: OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_IDP_URI
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 500m

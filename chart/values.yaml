@@ -1,18 +1,37 @@
-domain: can-i-haz-kubernetes.ee-lte-1.codemowers.io
+domain: can-i-haz-kubernetes
+
+# Registry/namespace prefix for short image names. Full image paths override it.
+imageRegistry: ghcr.io/codemowers
+
+# Optional credentials for private GHCR packages. Public packages need none.
+imagePullSecrets: []
 
 uploader:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/uploader:latest
+  image: lolcatz-uploader:latest
 browse:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/browse:latest
+  image: lolcatz-browse:latest
 search:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/search:latest
+  image: lolcatz-search:latest
 comments:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/comments:latest
+  image: lolcatz-comments:latest
+admin:
+  enabled: true
+  image: lolcatz-admin:latest
 tagger:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/tagger:latest
+  image: lolcatz-tagger:latest
 taggerModel:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/tagger-model:latest
+  image: lolcatz-tagger-model:latest
+thumbnailer:
+  image: lolcatz-thumbnailer:latest
 ocr:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/ocr:latest
+  image: lolcatz-ocr:latest
+exif:
+  image: lolcatz-exif:latest
+insightface:
+  # Set true when adding the local exercise implementation.
+  enabled: false
+  image: lolcatz-insightface:latest
+insightfaceModel:
+  image: lolcatz-insightface-model:latest
 frontend:
-  image: git.codemowers.io/matmlazi/lolcatz-foobar/frontend:latest
+  image: lolcatz-frontend:latest

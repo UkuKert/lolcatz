@@ -1,0 +1,27 @@
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Redpanda
+metadata:
+  name: lolcatz-redpanda
+spec:
+  chartRef: {}
+  clusterSpec:
+    tls:
+      certs:
+        default:
+          caEnabled: true
+          secretRef:
+            name: lolcatz-redpanda-internal-tls
+    auth:
+      sasl:
+        enabled: true
+        secretRef: lolcatz-redpanda-users
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    storage:
+      persistentVolume:
+        size: 10Gi

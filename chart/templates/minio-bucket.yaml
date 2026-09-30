@@ -1,0 +1,9 @@
+apiVersion: s3.onyxia.sh/v1alpha1
+kind: Bucket
+metadata:
+  name: lolcatz-storage
+spec:
+  name: {{ .Release.Namespace }}.lolcatz
+  s3InstanceRef: minio/default
+  quota:
+    default: 100000000000

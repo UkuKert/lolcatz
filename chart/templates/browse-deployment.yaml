@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-browse
+  annotations:
+    kubernetes.io/description: >-
+      Uses the configured S3 endpoint for storage access and the public S3
+      endpoint to sign download URLs.
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-browse
+  template:
+    metadata:
+      labels:
+        app: lolcatz-browse
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: lolcatz-browse-internal-tls
+      containers:
+        - name: browse
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.browse.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+            - name: https
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+          volumeMounts:
+            - name: server-tls
+              mountPath: /etc/server-tls
+              readOnly: true
+          env:
+            - name: TLS_CERT_FILE
+              value: /etc/server-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/server-tls/tls.key
+            - name: REDIS_TLS
+              value: "true"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-redis-password
+                  key: password
+            - name: PGSSLMODE
+              value: verify-full
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: REDIS_ADDR
+              value: lolcatz-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+            - name: ADMIN_ENABLED
+              value: {{ .Values.admin.enabled | quote }}
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: publicEndpoint
+            - name: S3_USE_SSL
+              value: "true"
+            - name: S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: region
+            - name: S3_BUCKET
+              value: {{ .Release.Namespace }}.lolcatz
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: accessKey
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: secretKey
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 500m

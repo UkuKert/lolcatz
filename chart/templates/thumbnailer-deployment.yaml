@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-thumbnailer
+  annotations:
+    kubernetes.io/description: >-
+      A bounded writable /tmp volume provides scratch space for
+      image-processing libraries with a read-only root filesystem.
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-thumbnailer
+  template:
+    metadata:
+      labels:
+        app: lolcatz-thumbnailer
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: lolcatz-thumbnailer-internal-tls
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+      containers:
+        - name: thumbnailer
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.thumbnailer.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+            - name: https
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+          env:
+            - name: TLS_CERT_FILE
+              value: /etc/server-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/server-tls/tls.key
+            - name: AWS_CA_BUNDLE
+              value: /etc/ssl/certs/ca-certificates.crt
+            - name: PGSSLMODE
+              value: verify-full
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: publicEndpoint
+            - name: S3_USE_SSL
+              value: "true"
+            - name: S3_BUCKET
+              value: {{ .Release.Namespace }}.lolcatz
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: accessKey
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: secretKey
+            - name: S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: region
+          volumeMounts:
+            - name: server-tls
+              mountPath: /etc/server-tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 2Gi
+              cpu: '2'

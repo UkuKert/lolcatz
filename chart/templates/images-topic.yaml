@@ -1,0 +1,16 @@
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: lolcatz-images
+  annotations:
+    kubernetes.io/description: >-
+      Keyed by image ID and compacted to retain the latest live event per image
+      as a complete replay source, sized by image count rather than time.
+      Deletes are published as tombstones.
+spec:
+  cluster:
+    clusterRef:
+      name: lolcatz-redpanda
+  partitions: 3
+  additionalConfig:
+    cleanup.policy: compact

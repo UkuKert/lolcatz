@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-frontend
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-frontend
+  template:
+    metadata:
+      labels:
+        app: lolcatz-frontend
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: lolcatz-frontend-internal-tls
+      containers:
+        - name: frontend
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.frontend.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+            - name: https
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+          volumeMounts:
+            - name: server-tls
+              mountPath: /etc/server-tls
+              readOnly: true
+          env:
+            - name: TLS_CERT_FILE
+              value: /etc/server-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/server-tls/tls.key
+            - name: LOGIN_LINK_URL
+              value: https://lolcatz-uploader.{{ .Release.Namespace }}.svc.cluster.local:8080/api/upload/session
+            - name: BROWSE_URL
+              value: https://lolcatz-browse.{{ .Release.Namespace }}.svc.cluster.local:8080
+            - name: OIDC_PROVIDER_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_IDP_DISPLAY_NAME
+            - name: OIDC_CLIENT_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ORIGIN
+            - name: OIDC_AUDIENCE
+              value: "$(OIDC_CLIENT_ORIGIN)/api"
+            - name: OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_IDP_URI
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ID
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_SECRET
+            - name: NEXTAUTH_URL
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ORIGIN
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-nextauth-secret
+                  key: secret
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+              cpu: 500m

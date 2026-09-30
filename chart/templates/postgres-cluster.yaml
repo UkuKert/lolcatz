@@ -2,9 +2,19 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: lolcatz-database
-  namespace: lolcatz
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
-  instances: 1
+  postgresql:
+    extensions:
+      - name: pgvector
+        image:
+          reference: ghcr.io/cloudnative-pg/pgvector:0.8.1-18-trixie
+      - name: postgis
+        ld_library_path:
+          - system
+        image:
+          reference: ghcr.io/cloudnative-pg/postgis-extension:3.6.2-18-trixie
   bootstrap:
     initdb:
       database: lolcatz
@@ -14,7 +24,6 @@ spec:
       owner: lolcatz
   storage:
     size: 10Gi
-    storageClass: postgres
   resources:
     requests:
       memory: 256Mi

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lolcatz-comments
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+    traefik.ingress.kubernetes.io/service.serverstransport: {{ .Release.Namespace }}-lolcatz-comments@kubernetescrd
+spec:
+  selector:
+    app: lolcatz-comments
+  ports:
+    - name: https
+      port: 8080
+      targetPort: https

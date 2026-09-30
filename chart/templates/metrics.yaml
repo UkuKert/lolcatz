@@ -1,0 +1,25 @@
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor" }}
+{{- range $name := list "admin" "browse" "comments" "frontend" "search" "thumbnailer" "uploader" "exif" "ocr" "tagger" "thumbnailer-worker" }}
+{{- if or (ne $name "admin") $.Values.admin.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: lolcatz-{{ $name }}
+  labels:
+    app.kubernetes.io/part-of: lolcatz
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-{{ $name }}
+  podMetricsEndpoints:
+    - port: metrics
+      relabelings:
+        - targetLabel: application
+          replacement: lolcatz
+        - targetLabel: component
+          replacement: {{ $name }}
+{{- end }}
+{{- end }}
+{{- end }}

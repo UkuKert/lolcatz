@@ -1,0 +1,66 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lolcatz-frontend
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  rules:
+    - host: {{ .Values.domain }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /api/browse
+            backend:
+              service:
+                name: lolcatz-browse
+                port:
+                  name: https
+          - pathType: Prefix
+            path: /api/thumbnails
+            backend:
+              service:
+                name: lolcatz-thumbnailer
+                port:
+                  name: https
+          - pathType: Prefix
+            path: /api/search
+            backend:
+              service:
+                name: lolcatz-search
+                port:
+                  name: https
+          - pathType: Prefix
+            path: /api/comments
+            backend:
+              service:
+                name: lolcatz-comments
+                port:
+                  name: https
+          - pathType: Prefix
+            path: /api/upload
+            backend:
+              service:
+                name: lolcatz-uploader
+                port:
+                  name: https
+          {{- if .Values.admin.enabled }}
+          - pathType: Prefix
+            path: /api/admin
+            backend:
+              service:
+                name: lolcatz-admin
+                port:
+                  name: https
+          {{- end }}
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: lolcatz-frontend
+                port:
+                  name: https
+  tls:
+    - hosts:
+        - {{ .Values.domain }}
+      secretName: lolcatz-frontend-public-tls

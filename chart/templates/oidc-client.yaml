@@ -2,7 +2,8 @@ apiVersion: codemowers.cloud/v1
 kind: OIDCClient
 metadata:
   name: lolcatz-frontend
-  namespace: lolcatz
+  annotations:
+    kubernetes.io/description: "Login for the Can I haz Kubernetes image board"
 spec:
   displayName: Lolcatz
   applicationType: web
@@ -21,3 +22,7 @@ spec:
     - profile
     - email
     - groups
+    - lolcatz:images:read
+    - lolcatz:images:write
+    - lolcatz:comments:write
+    - lolcatz:boards:write

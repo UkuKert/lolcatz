@@ -1,0 +1,19 @@
+{{- range $name := list "admin" "browse" "comments" "frontend" "search" "thumbnailer" "uploader" "redis" "redpanda" }}
+{{- if or (ne $name "admin") $.Values.admin.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lolcatz-{{ $name }}
+spec:
+  dnsNames:
+    - lolcatz-{{ $name }}
+    {{- if eq $name "redpanda" }}
+    - "*.lolcatz-redpanda.{{ $.Release.Namespace }}.svc.cluster.local"
+    {{- end }}
+  issuerRef:
+    name: cluster-tls-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+{{- end }}
+{{- end }}

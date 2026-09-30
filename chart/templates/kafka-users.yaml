@@ -1,0 +1,46 @@
+{{- range $name := list "uploader" "exif" "ocr" "tagger" "thumbnailer-worker" }}
+---
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: User
+metadata:
+  name: lolcatz-{{ $name }}
+spec:
+  cluster:
+    clusterRef:
+      name: lolcatz-redpanda
+  authentication:
+    type: scram-sha-512
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: lolcatz-{{ $name }}-kafka
+          key: password
+  authorization:
+    acls:
+      - type: allow
+        resource:
+          type: topic
+          name: lolcatz-
+          patternType: prefixed
+        operations:
+          - Describe
+          - {{ if or (eq $name "uploader") (eq $name "tagger") }}Write{{ else }}Read{{ end }}
+      {{- if eq $name "tagger" }}
+      - type: allow
+        resource:
+          type: topic
+          name: lolcatz-images
+        operations:
+          - Read
+      {{- end }}
+      {{- if ne $name "uploader" }}
+      - type: allow
+        resource:
+          type: group
+          name: lolcatz-
+          patternType: prefixed
+        operations:
+          - Read
+          - Describe
+      {{- end }}
+{{- end }}

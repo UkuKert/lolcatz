@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-ocr
+  annotations:
+    kubernetes.io/description: >-
+      A bounded writable /tmp volume provides scratch space for tesseract
+      and PIL via tempfile with a read-only root filesystem.
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-ocr
+  template:
+    metadata:
+      labels:
+        app: lolcatz-ocr
+    spec:
+      terminationGracePeriodSeconds: 120
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+      containers:
+        - name: ocr
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.ocr.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: KAFKA_USERNAME
+              value: lolcatz-ocr
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-ocr-kafka
+                  key: password
+            - name: AWS_CA_BUNDLE
+              value: /etc/ssl/certs/ca-certificates.crt
+            - name: PGSSLMODE
+              value: verify-full
+            - name: KAFKA_TLS
+              value: "true"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: KAFKA_BROKERS
+              value: lolcatz-redpanda.{{ .Release.Namespace }}.svc.cluster.local:9093
+            - name: S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: region
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: publicEndpoint
+            - name: S3_USE_SSL
+              value: "true"
+            - name: S3_BUCKET
+              value: {{ .Release.Namespace }}.lolcatz
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: accessKey
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: secretKey
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 1Gi
+              cpu: '2'

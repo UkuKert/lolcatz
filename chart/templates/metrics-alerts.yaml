@@ -1,0 +1,100 @@
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lolcatz
+  labels:
+    app.kubernetes.io/part-of: lolcatz
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  groups:
+    - name: lolcatz
+      rules:
+        - alert: LolcatzMetricsTargetDown
+          expr: up{namespace="{{ .Release.Namespace }}",application="lolcatz"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Application metrics target has been unreachable for five minutes
+        - alert: LolcatzHTTPFailures
+          expr: |
+            (sum by (namespace, component, route) (rate(lolcatz_http_requests_total{namespace="{{ .Release.Namespace }}",code=~"5.."}[5m]))
+            / sum by (namespace, component, route) (rate(lolcatz_http_requests_total{namespace="{{ .Release.Namespace }}"}[5m])) > 0.05)
+            and on (namespace, component, route)
+            (sum by (namespace, component, route) (increase(lolcatz_http_requests_total{namespace="{{ .Release.Namespace }}",code=~"5.."}[5m])) >= 5)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: More than five percent of requests fail, with at least five failures per five minutes
+        - alert: LolcatzHTTPSlow
+          expr: |
+            (histogram_quantile(0.95, sum by (namespace, component, route, le) (rate(lolcatz_http_request_duration_seconds_bucket{namespace="{{ .Release.Namespace }}"}[5m]))) > 2)
+            and on (namespace, component, route)
+            (sum by (namespace, component, route) (increase(lolcatz_http_request_duration_seconds_count{namespace="{{ .Release.Namespace }}"}[5m])) >= 20)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Request p95 latency exceeds two seconds with sufficient traffic
+        - alert: LolcatzSearchSlow
+          expr: |
+            (histogram_quantile(0.95, sum by (namespace, component, query_type, le) (rate(lolcatz_search_query_duration_seconds_bucket{namespace="{{ .Release.Namespace }}"}[5m]))) > 2)
+            and on (namespace, component, query_type)
+            (sum by (namespace, component, query_type) (increase(lolcatz_search_query_duration_seconds_count{namespace="{{ .Release.Namespace }}"}[5m])) >= 20)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Search query p95 latency exceeds two seconds with sufficient traffic
+        - alert: LolcatzThumbnailDegraded
+          expr: |
+            (sum by (namespace, component) (rate(lolcatz_thumbnail_fallbacks_total{namespace="{{ .Release.Namespace }}"}[5m]))
+            / sum by (namespace, component) (rate(lolcatz_http_requests_total{namespace="{{ .Release.Namespace }}",component="thumbnailer",route!="unmatched"}[5m])) > 0.1)
+            and on (namespace, component)
+            (sum by (namespace, component) (increase(lolcatz_thumbnail_fallbacks_total{namespace="{{ .Release.Namespace }}"}[5m])) >= 5)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Thumbnail generation is repeatedly falling back to originals
+        - alert: LolcatzWorkerStuck
+          expr: |
+            (time() - lolcatz_worker_active_since_seconds{namespace="{{ .Release.Namespace }}"} > 120)
+            and (lolcatz_worker_active_since_seconds{namespace="{{ .Release.Namespace }}"} > 0)
+            and on (namespace, pod) (up{namespace="{{ .Release.Namespace }}",application="lolcatz"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Worker has been stuck processing or committing one record for over seven minutes
+        - alert: LolcatzWorkerNotPolling
+          expr: |
+            (time() - lolcatz_worker_last_poll_timestamp_seconds{namespace="{{ .Release.Namespace }}"} > 60)
+            and (lolcatz_worker_last_poll_timestamp_seconds{namespace="{{ .Release.Namespace }}"} > 0)
+            and on (namespace, pod) (lolcatz_worker_active_since_seconds{namespace="{{ .Release.Namespace }}"} == 0)
+            and on (namespace, pod) (up{namespace="{{ .Release.Namespace }}",application="lolcatz"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Idle worker has stopped polling Kafka
+        - alert: LolcatzWorkerFailures
+          expr: sum by (namespace, component) (increase(lolcatz_worker_failures_total{namespace="{{ .Release.Namespace }}"}[10m])) >= 3
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Repeated worker processing, polling or commit failures
+        - alert: LolcatzRepeatedRestarts
+          expr: sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}",pod=~"lolcatz-.*"}[15m])) >= 3
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Container restarted at least three times in fifteen minutes
+            description: >-
+              Detects repeated restarts, including fatal failures that exit before
+              the next metrics scrape.
+{{- end }}

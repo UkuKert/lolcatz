@@ -1,0 +1,16 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lolcatz-database
+spec:
+  dnsNames:
+    - lolcatz-database-rw
+    - lolcatz-database-ro
+    - lolcatz-database-r
+  secretTemplate:
+    labels:
+      cnpg.io/reload: "true"
+  issuerRef:
+    name: cluster-tls-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

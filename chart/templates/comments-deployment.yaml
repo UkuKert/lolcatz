@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-comments
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-comments
+  template:
+    metadata:
+      labels:
+        app: lolcatz-comments
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: server-tls
+          secret:
+            secretName: lolcatz-comments-internal-tls
+      containers:
+        - name: comments
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.comments.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+            - name: https
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+          volumeMounts:
+            - name: server-tls
+              mountPath: /etc/server-tls
+              readOnly: true
+          env:
+            - name: TLS_CERT_FILE
+              value: /etc/server-tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/server-tls/tls.key
+            - name: PGSSLMODE
+              value: verify-full
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: OIDC_CLIENT_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_CLIENT_ORIGIN
+            - name: OIDC_AUDIENCE
+              value: "$(OIDC_CLIENT_ORIGIN)/api"
+            - name: OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-client-lolcatz-frontend-owner-secrets
+                  key: OIDC_IDP_URI
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 500m

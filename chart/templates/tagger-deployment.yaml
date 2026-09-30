@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lolcatz-tagger
+  annotations:
+    kubernetes.io/description: >-
+      Uses the configured S3 endpoint to read images. A bounded /tmp volume
+      provides scratch space with a read-only root filesystem, including
+      matplotlib configuration when its default directory is not writable.
+spec:
+  selector:
+    matchLabels:
+      app: lolcatz-tagger
+  template:
+    metadata:
+      labels:
+        app: lolcatz-tagger
+    spec:
+      terminationGracePeriodSeconds: 120
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: yolo-model
+          image:
+            reference: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.taggerModel.image) }}
+            pullPolicy: Always
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      containers:
+        - name: tagger
+          securityContext:
+            readOnlyRootFilesystem: true
+          image: {{ include "lolcatz.image" (dict "registry" .Values.imageRegistry "image" .Values.tagger.image) }}
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: KAFKA_USERNAME
+              value: lolcatz-tagger
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-tagger-kafka
+                  key: password
+            - name: AWS_CA_BUNDLE
+              value: /etc/ssl/certs/ca-certificates.crt
+            - name: PGSSLMODE
+              value: verify-full
+            - name: KAFKA_TLS
+              value: "true"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-database-app
+                  key: uri
+            - name: KAFKA_BROKERS
+              value: lolcatz-redpanda.{{ .Release.Namespace }}.svc.cluster.local:9093
+            - name: S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: region
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: publicEndpoint
+            - name: S3_USE_SSL
+              value: "true"
+            - name: S3_BUCKET
+              value: {{ .Release.Namespace }}.lolcatz
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: accessKey
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lolcatz-storage
+                  key: secretKey
+          volumeMounts:
+            - name: yolo-model
+              mountPath: /models
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: "2"

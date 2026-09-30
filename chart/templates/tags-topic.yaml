@@ -1,0 +1,16 @@
+apiVersion: cluster.redpanda.com/v1alpha2
+kind: Topic
+metadata:
+  name: lolcatz-tags
+  annotations:
+    kubernetes.io/description: >-
+      Complete YOLO annotations grouped by class name, keyed by image ID.
+      Each run replaces the previous result, including an empty object when
+      nothing is detected. Image deletions are forwarded as tombstones.
+spec:
+  cluster:
+    clusterRef:
+      name: lolcatz-redpanda
+  partitions: 3
+  additionalConfig:
+    cleanup.policy: compact
