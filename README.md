@@ -147,11 +147,5 @@ For frontend unit and browser checks, run `npm ci`, `npm test`,
 the worker dependencies. See [CI](.github/workflows/images.yaml) for the complete
 check commands.
 
-Application metrics and health checks use internal HTTP port `9090` (`/metrics`
-and `/health`). The chart includes [PodMonitors](chart/templates/metrics.yaml)
-and [alerts](chart/templates/metrics-alerts.yaml) when their APIs are available.
-Run `sh test/monitoring/check.sh` to validate the alert rules with Helm, Docker,
-and PyYAML installed.
-
 This is a recreatable demo. Services initialize a fresh schema; reset incompatible
 data when changing it.
