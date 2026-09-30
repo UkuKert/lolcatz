@@ -1,0 +1,30 @@
+# Participant implementation for exercises/insight-face.md
+/services/insightface/
+/services/Dockerfile.insightface
+/services/Dockerfile.insightface-model
+/chart/templates/insightface-*.yaml
+
+# Local scratch and editor files
+*.swp
+/edasi
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+skaffold.env
+.npmrc
+
+# Generated output and caches
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage/
+dist/
+build/
+.DS_Store
+
+**/target/
