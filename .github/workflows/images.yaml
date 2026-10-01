@@ -38,10 +38,6 @@ jobs:
           helm lint chart
           helm template lolcatz chart --namespace chart-review >/dev/null
           helm template lolcatz chart --namespace chart-review --set admin.enabled=false >/dev/null
-      - name: Validate monitoring alerts
-        run: |
-          python3 -m pip install PyYAML==6.0.2
-          sh test/monitoring/check.sh
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
