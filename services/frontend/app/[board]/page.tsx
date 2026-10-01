@@ -14,11 +14,11 @@ interface UploadItem {
   error?: string;
 }
 
-function uploadFile(url: string, file: File, onProgress: (percent: number) => void) {
+function uploadFile(url: string, headers: Record<string, string>, file: File, onProgress: (percent: number) => void) {
   return new Promise<void>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("PUT", url);
-    request.setRequestHeader("Content-Type", file.type);
+    for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
     request.upload.addEventListener("progress", event => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
     });
@@ -62,7 +62,7 @@ function BoardContent({ board }: { board: string }) {
     }
     updateUpload(index, { status: "preparing", percent: 2 });
 
-    const { id, put_url, board: uploadBoard, title: uploadTitle, filename } = await requestJSON<{ id: string; put_url: string; board: string; title: string; filename: string }>("/api/upload/presign", {
+    const { id, put_url, put_headers, board: uploadBoard, title: uploadTitle, filename } = await requestJSON<{ id: string; put_url: string; put_headers: Record<string, string>; board: string; title: string; filename: string }>("/api/upload/presign", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -76,7 +76,7 @@ function BoardContent({ board }: { board: string }) {
       }),
     });
     updateUpload(index, { status: "uploading", percent: 5 });
-    await uploadFile(put_url, file, percent => {
+    await uploadFile(put_url, put_headers, file, percent => {
       updateUpload(index, { percent: 5 + Math.round(percent * 0.85) });
     });
 
@@ -92,7 +92,6 @@ function BoardContent({ board }: { board: string }) {
         board: uploadBoard,
         title: uploadTitle,
         filename,
-        content_type: file.type,
       }),
     });
     updateUpload(index, { status: "done", percent: 100 });

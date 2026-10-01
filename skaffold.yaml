@@ -70,7 +70,6 @@ deploy:
         chartPath: chart
         setValues:
           imageRegistry: ""
-          imagePullSecrets[0].name: zot-pull-secret
         # Helm test hooks and image volumes are outside automatic image replacement.
         setValueTemplates:
           frontend.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_frontend}}"

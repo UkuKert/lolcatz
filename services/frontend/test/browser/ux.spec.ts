@@ -5,11 +5,12 @@ const post = { id: "example", board: "b", title: "Example post", filename: "exam
   uploaded_at: "2026-09-23T09:00:00Z", image_url: "/github.svg", annotations: [] };
 
 async function mockApp(page: Page) {
-  const state = { token: "first-token", adminStatus: 200 };
+  const state = { token: "first-token", adminStatus: 200, error: undefined as string | undefined };
   await page.route("**/api/**", async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/auth/session") return route.fulfill({ json: {
       user: { name: "Alice", email: "alice@example.test" }, accessToken: state.token,
+      error: state.error,
       oidcAttributes: { subject: "alice" }, expires: "2099-01-01T00:00:00Z",
     } });
     if (path === "/api/admin/me") return route.fulfill({ status: state.adminStatus, json: { role: "admin" } });
@@ -20,6 +21,50 @@ async function mockApp(page: Page) {
   });
   return state;
 }
+
+test("direct uploads send the signed storage headers before confirmation", async ({ page }) => {
+  await mockApp(page);
+  let uploaded = false;
+  let confirmed = false;
+  await page.route("**/api/upload/presign", route => route.fulfill({ json: {
+    id: "new-image", put_url: "http://127.0.0.1:3101/storage-upload",
+    put_headers: { "Content-Type": "image/png", "X-Amz-Meta-Lolcatz-Owner": "42" },
+    board: "b", title: "Cat", filename: "cat.png",
+  } }));
+  await page.route("**/storage-upload", async route => {
+    expect(route.request().method()).toBe("PUT");
+    expect(route.request().headers()["x-amz-meta-lolcatz-owner"]).toBe("42");
+    expect(route.request().headers()["content-type"]).toBe("image/png");
+    uploaded = true;
+    await route.fulfill({ status: 200 });
+  });
+  await page.route("**/api/upload/confirm", async route => {
+    expect(uploaded).toBe(true);
+    expect(route.request().postDataJSON()).toEqual({ id: "new-image", board: "b", title: "Cat", filename: "cat.png" });
+    confirmed = true;
+    await route.fulfill({ status: 201, json: { id: "new-image" } });
+  });
+  await page.goto("/b");
+  await page.getByRole("button", { name: "Post something to /b/" }).click();
+  await page.getByLabel("Images", { exact: true }).setInputFiles({ name: "cat.png", mimeType: "image/png", buffer: Buffer.from("image bytes") });
+  await page.getByRole("button", { name: "Post", exact: true }).click();
+  await expect(page.getByText("Batch finished")).toBeVisible();
+  expect(confirmed).toBe(true);
+  await expect(page.locator(".upload-item-done")).toHaveCount(1);
+});
+
+test("a transient refresh failure recovers without signing in again", async ({ page }) => {
+  const state = await mockApp(page);
+  state.token = "";
+  state.error = "RefreshTokenRetry";
+  await page.goto("/profile");
+  await expect(page.locator(".auth-prompt")).toContainText("retry automatically");
+  await expect(page.getByRole("button", { name: "Sign in again" })).toHaveCount(0);
+  state.token = "renewed-token";
+  state.error = undefined;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.getByRole("tab", { name: "Account" })).toBeVisible();
+});
 
 test("board form survives token refresh and a failed access check", async ({ page }) => {
   const state = await mockApp(page);

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+from image_input import InvalidImage, decode_image, read_bytes
 
 # Recorded on every row written; bump when extraction changes.
 PRODUCER_VERSION = os.environ.get("PRODUCER_VERSION", "tesseract-1")
@@ -38,10 +39,7 @@ def title_from_ocr(text: str) -> str:
 
 
 def extract_text(image_bytes: bytes, language: str) -> str:
-    from PIL import Image, ImageOps
-
-    with Image.open(io.BytesIO(image_bytes)) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
+    with decode_image(image_bytes) as image:
         encoded = io.BytesIO()
         image.save(encoded, format="PNG")
 
@@ -70,8 +68,12 @@ def process_message(message, db, s3, bucket: str, language: str) -> None:
     if image_row is None:
         return
     object_key = f"{image_row[0]}/{image_id}"
-    image_bytes = s3.get_object(Bucket=bucket, Key=object_key)["Body"].read()
-    text = extract_text(image_bytes, language)
+    try:
+        image_bytes = read_bytes(s3, bucket, object_key)
+        text = extract_text(image_bytes, language)
+    except (InvalidImage, subprocess.TimeoutExpired):
+        log.warning("skipping invalid or over-budget OCR image %s", image_id, exc_info=True)
+        return
 
     # derived_title stays in this service's own table; browse falls back to it
     # when the uploader's title is blank. Writing images.title from here would

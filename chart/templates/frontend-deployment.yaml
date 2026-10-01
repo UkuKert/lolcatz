@@ -37,6 +37,7 @@ spec:
             httpGet:
               path: /health
               port: metrics
+            initialDelaySeconds: 10
           volumeMounts:
             - name: server-tls
               mountPath: /etc/server-tls

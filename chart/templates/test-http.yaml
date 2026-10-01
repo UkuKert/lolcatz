@@ -30,9 +30,6 @@ spec:
         limits:
           cpu: 500m
           memory: 128Mi
-      env:
-        - name: NODE_EXTRA_CA_CERTS
-          value: /etc/cluster-ca/ca.pem
       volumeMounts:
         - name: cluster-ca
           mountPath: /etc/cluster-ca

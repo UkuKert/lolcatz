@@ -1,7 +1,7 @@
 import "next-auth";
 import "next-auth/jwt";
 
-type SessionError = "RefreshTokenError";
+type SessionError = "RefreshTokenError" | "RefreshTokenRetry";
 type OIDCAttributes = {
   subject?: string;
   email?: string;
@@ -23,6 +23,8 @@ declare module "next-auth/jwt" {
     accessToken?: string;
     idToken?: string;
     refreshToken?: string;
+    refreshRetryAt?: number;
+    refreshFailures?: number;
     error?: SessionError;
     oidcAttributes?: OIDCAttributes;
   }

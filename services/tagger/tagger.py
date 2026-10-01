@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-import io
+from image_input import InvalidImage, decode_image, read_bytes
 
 # Recorded on every row written. Bump it (or set PRODUCER_VERSION) when the
 # model changes, so stale rows can be found and replayed selectively.
@@ -28,13 +28,7 @@ def get_env(k: str, default: str) -> str:
 
 
 def read_image(s3, bucket: str, object_key: str):
-    from PIL import Image, ImageOps
-
-    response = s3.get_object(Bucket=bucket, Key=object_key)
-    with Image.open(io.BytesIO(response["Body"].read())) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-        image.load()
-    return image
+    return decode_image(read_bytes(s3, bucket, object_key))
 
 
 def detect_annotations(model, image, confidence: float) -> list[dict]:
@@ -77,7 +71,11 @@ def process_message(message, db, s3, bucket, model, confidence, producer, topic_
     if image_row is None:
         return
     object_key = f"{image_row[0]}/{image_id}"
-    image = read_image(s3, bucket, object_key)
+    try:
+        image = read_image(s3, bucket, object_key)
+    except InvalidImage:
+        log.warning("skipping invalid tagger image %s", image_id, exc_info=True)
+        return
     detections = detect_annotations(model, image, confidence)
 
     # Keep every above-threshold detection. Browse/search derive a compact tag

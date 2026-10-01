@@ -16,6 +16,7 @@ skaffold.env
 .npmrc
 
 # Generated output and caches
+/.skaffold-cache.json
 .venv/
 .pytest_cache/
 .mypy_cache/

@@ -4,7 +4,13 @@ import { AdminProvider } from "../lib/admin-access";
 import { PreferencesProvider } from "../lib/preferences";
 
 function SessionGuard({ children }: { children: React.ReactNode }) {
-  const { data: session } = useSession();
+  const { data: session, update } = useSession();
+  if (!process.env.NEXT_PUBLIC_DEV_AUTH_TOKEN && session?.error === "RefreshTokenRetry" && !session.accessToken) {
+    return <div className="panel auth-prompt" role="alert">
+      <p>Sign-in service temporarily unavailable. Your session will retry automatically.</p>
+      <button className="btn" onClick={() => update()}>Retry</button>
+    </div>;
+  }
   if (!process.env.NEXT_PUBLIC_DEV_AUTH_TOKEN && session?.error === "RefreshTokenError") {
     return <div className="panel auth-prompt" role="alert">
       <p>Your session could not be renewed. Sign in again to continue.</p>

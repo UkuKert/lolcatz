@@ -9,7 +9,7 @@ COPY services/tagger/requirements.txt services/tagger/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip pip install --require-hashes -r requirements.lock \
     && pip install --no-index --no-deps -r requirements.txt
 
-COPY services/worker_runtime.py services/metrics.py ./
+COPY services/worker_runtime.py services/metrics.py services/image_input.py ./
 COPY --chmod=0644 services/tagger/tagger.py services/tagger/schema.sql ./
 
 # Static config baked into the image; only secrets and cluster-specific

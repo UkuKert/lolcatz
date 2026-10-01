@@ -11,7 +11,7 @@ COPY services/ocr/requirements.txt services/ocr/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip pip install --require-hashes -r requirements.lock \
     && pip install --no-index --no-deps -r requirements.txt
 
-COPY services/worker_runtime.py services/metrics.py ./
+COPY services/worker_runtime.py services/metrics.py services/image_input.py ./
 COPY --chmod=0644 services/ocr/ocr.py services/ocr/schema.sql ./
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

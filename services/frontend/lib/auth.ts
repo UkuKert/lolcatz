@@ -90,6 +90,8 @@ export const authOptions: NextAuthOptions = {
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
         token.error = undefined;
+        token.refreshRetryAt = undefined;
+        token.refreshFailures = undefined;
         token.oidcAttributes = oidcAttributes(account.id_token);
         return token;
       }

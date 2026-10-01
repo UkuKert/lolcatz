@@ -39,7 +39,7 @@ async function renew(refreshToken: string): Promise<RenewedTokens> {
     pending = getClient().then(client => client.refresh(refreshToken, { exchangeBody: { resource: process.env.OIDC_AUDIENCE } }));
     renewals.set(refreshToken, pending);
     const clear = () => { setTimeout(() => renewals.delete(refreshToken), 30_000).unref(); };
-    pending.then(clear, clear);
+    pending.then(clear, () => renewals.delete(refreshToken));
   }
   return pending;
 }
@@ -53,13 +53,30 @@ export async function refreshLoginToken(
   if (typeof token.refreshToken !== "string" || token.error === "RefreshTokenError") {
     return { ...token, accessToken: undefined, error: "RefreshTokenError" };
   }
+  if (typeof token.refreshRetryAt === "number" && token.refreshRetryAt > now) {
+    return { ...token, accessToken: tokenExpiry(token.accessToken) > now ? token.accessToken : undefined };
+  }
   let updated: RenewedTokens;
   try {
     updated = await refresh(token.refreshToken);
   } catch (error) {
     const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-    if (!(error instanceof errors.OPError || error instanceof errors.RPError) &&
-        !["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ERR_OUTGOING_REQUEST_TIMEOUT"].includes(code || "")) throw error;
+    const providerError = error instanceof errors.OPError || error instanceof errors.RPError;
+    const status = providerError ? error.response?.statusCode : undefined;
+    const transient = ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ERR_OUTGOING_REQUEST_TIMEOUT"].includes(code || "") ||
+      status === 429 || (status !== undefined && status >= 500) ||
+      (error instanceof errors.OPError && ["server_error", "temporarily_unavailable"].includes(error.error || ""));
+    if (transient) {
+      const failures = Math.min((token.refreshFailures ?? 0) + 1, 5);
+      return {
+        ...token,
+        accessToken: tokenExpiry(token.accessToken) > now ? token.accessToken : undefined,
+        error: "RefreshTokenRetry",
+        refreshFailures: failures,
+        refreshRetryAt: now + Math.min(5_000 * 2 ** (failures - 1), 60_000),
+      };
+    }
+    if (!providerError) throw error;
     return { ...token, accessToken: undefined, error: "RefreshTokenError" };
   }
   if (tokenExpiry(updated.access_token) <= now + 120_000) {
@@ -71,5 +88,7 @@ export async function refreshLoginToken(
     idToken: updated.id_token ?? token.idToken,
     refreshToken: updated.refresh_token ?? token.refreshToken,
     error: undefined,
+    refreshRetryAt: undefined,
+    refreshFailures: undefined,
   };
 }

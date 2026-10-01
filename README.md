@@ -80,16 +80,23 @@ are for debugging individual HTTPS services.
 
 [Chart values](chart/values.yaml) define image overrides and optional components.
 [CI](.github/workflows/images.yaml) tests the application and publishes
-`ghcr.io/codemowers/lolcatz-<service>` images from `main`, tagged `latest` and with
-the commit SHA. Version tags also publish release tags. The `release-values`
+`ghcr.io/<repository-owner>/lolcatz-<service>` images for `v*` tags, with the
+version, commit SHA, and release tags. Main-branch builds are verified without
+publishing. The `release-values`
 artifact pins image digests and records the source revision; use the chart from
 that revision with those values. Public packages need no pull credentials;
 private packages require `imagePullSecrets`.
 
+Versioned charts are published to
+`oci://ghcr.io/<repository-owner>/charts/lolcatz`; each chart release points to
+the matching digest-pinned `v*` images.
+
 ## Authentication
 
-Passmower is the single OIDC issuer. NextAuth owns authorization-code/PKCE login
-and renewal, retaining refresh and ID tokens in its encrypted HttpOnly cookie.
+Passmower provisions the OIDC client registration; the application uses the
+configured OIDC issuer and does not require Passmower. NextAuth owns
+authorization-code/PKCE login and renewal, retaining refresh and ID tokens in
+its encrypted HttpOnly cookie.
 The browser receives the access token and calls each API directly. APIs verify
 the signature, issuer, expiry, and public-origin-plus-`/api` audience, then check
 operation scopes and ownership.
@@ -104,12 +111,21 @@ operation scopes and ownership.
 Browse and search are public. Login links the verified ID-token email and subject
 to a local user; API requests resolve ownership from that subject. Client secrets
 and long-lived storage credentials stay server-side. New upload clients use
-`/api/upload/presign` followed by `/api/upload/confirm`.
+`/api/upload/presign` followed by `/api/upload/confirm`. Send the returned
+`put_headers` with the direct S3 PUT: the signature binds the owner and content
+type. Confirmation verifies the stored owner and uses the stored content type;
+retrying an already confirmed upload does not publish another event.
 
 ## Image processing and exercises
 
-Uploads publish keyed events to `lolcatz-images`. EXIF, OCR, YOLO, and thumbnail
-workers use independent consumer groups and commit offsets after processing.
+Uploads and deletions save keyed events in `image_outbox` in the same PostgreSQL
+transaction as the image change. An uploader background publisher delivers them
+to `lolcatz-images` in order, deleting pending rows only after Kafka acknowledges
+receipt. Outages and restarts retry pending events; a crash after acknowledgement
+can duplicate an event, so workers remain idempotent. EXIF, OCR, YOLO, and
+thumbnail workers use independent consumer groups and commit offsets after
+processing. OCR and YOLO skip corrupt or oversized image inputs while storage
+and database failures remain retryable.
 YOLO publishes replacement detections to `lolcatz-tags`; deletion tombstones
 retire derived data. Image bytes stay in S3 and metadata in PostgreSQL.
 

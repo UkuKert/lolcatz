@@ -49,3 +49,10 @@ CREATE INDEX IF NOT EXISTS comments_image_id ON comments(image_id);
 CREATE INDEX IF NOT EXISTS images_board ON images(board, uploaded_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS images_user_id ON images(user_id);
 CREATE INDEX IF NOT EXISTS comments_user_id ON comments(user_id);
+
+-- No image FK: deletion events must survive deletion of the image itself.
+CREATE TABLE IF NOT EXISTS image_outbox (
+    sequence BIGSERIAL PRIMARY KEY,
+    image_id TEXT NOT NULL,
+    payload BYTEA
+);
