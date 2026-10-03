@@ -51,6 +51,7 @@ to `127.0.0.1`; add it to `/etc/hosts` if needed.
 Enable the optional YOLO worker with:
 
 ```bash
+docker compose build tagger-model
 docker compose --profile ai up --build
 ```
 
@@ -62,21 +63,24 @@ The [Helm chart](chart/) targets Codemowers Cloud. Inspect the target cluster's
 admission policies for platform defaults and requirements; keep those settings
 out of application configuration. Namespace lifecycle belongs to the platform.
 
-Skaffold builds and pushes images using your local Docker credentials. Configure
-your own registry namespace for the context you use, for example:
+Copy the Skaffold environment template:
 
 ```bash
-skaffold config set \
-    --kube-context 'admin@ee-west-1.codemowers.io' \
-    default-repo zot.ee-west-1.codemowers.io/YOUR-NAMESPACE
-
-docker login zot.ee-west-1.codemowers.io
-skaffold dev --kube-context 'admin@ee-west-1.codemowers.io'
+cp skaffold.env.example skaffold.env
 ```
 
-The `lolcatz` deployment namespace needs a `zot-pull-secret` that can pull your
-images. Open the application through its Ingress hostname. Skaffold port-forwards
-are for debugging individual HTTPS services.
+Replace the `...` values in `skaffold.env` with your Kubernetes context,
+namespace, and default image repository (`SKAFFOLD_DEFAULT_REPO`, for example
+`ghcr.io/<your-user>`). This file is ignored by Git and loaded automatically by
+Skaffold. Log in to that registry with `docker login`, then start development:
+
+```bash
+skaffold dev
+```
+
+Open the application through its Ingress hostname. Skaffold port-forwards
+are for debugging individual services. Prometheus metrics endpoints use plain
+HTTP without TLS.
 
 [Chart values](chart/values.yaml) define image overrides and optional components.
 [CI](.github/workflows/images.yaml) tests the application and publishes
@@ -116,30 +120,9 @@ and long-lived storage credentials stay server-side. New upload clients use
 type. Confirmation verifies the stored owner and uses the stored content type;
 retrying an already confirmed upload does not publish another event.
 
-## Image processing and exercises
+## Exercises
 
-Uploads and deletions save keyed events in `image_outbox` in the same PostgreSQL
-transaction as the image change. An uploader background publisher delivers them
-to `lolcatz-images` in order, deleting pending rows only after Kafka acknowledges
-receipt. Outages and restarts retry pending events; a crash after acknowledgement
-can duplicate an event, so workers remain idempotent. EXIF, OCR, YOLO, and
-thumbnail workers use independent consumer groups and commit offsets after
-processing. OCR and YOLO skip corrupt or oversized image inputs while storage
-and database failures remain retryable.
-YOLO publishes replacement detections to `lolcatz-tags`; deletion tombstones
-retire derived data. Image bytes stay in S3 and metadata in PostgreSQL.
-
-To replay a worker after changing its model, stop its consumer group, rewind its
-Kafka offsets, and restore its previous replica count. Use the cluster's Kafka
-credentials and TLS trust. Bump the producer version to identify stale results;
-thumbnail output changes also require a new cache URL/storage version.
-
-- [Paws or Claws](exercises/paws-or-claws.md): real-time voting.
-- [Caption correction](exercises/caption-correction.md): build an LLM worker using
-  OCR and YOLO output while preserving the original caption.
-- [InsightFace](exercises/insight-face.md): consume person detections and implement
-  private face embeddings and similarity search. This optional implementation is
-  participant work and is excluded from default builds.
+See [exercises/](exercises/) for image-processing details and exercises.
 
 ## Checks
 
@@ -162,6 +145,3 @@ For frontend unit and browser checks, run `npm ci`, `npm test`,
 `PYTHONPATH=services python3 -m unittest discover -s services/tests` after installing
 the worker dependencies. See [CI](.github/workflows/images.yaml) for the complete
 check commands.
-
-This is a recreatable demo. Services initialize a fresh schema; reset incompatible
-data when changing it.

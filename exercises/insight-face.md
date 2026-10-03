@@ -170,8 +170,10 @@ resource limits and the read-only root filesystem. Configure the worker with:
 
 Use `.Values.insightface.image` for the worker and
 `.Values.insightfaceModel.image` for the model image volume. Put `buffalo_l/` at
-the model image's root and mount that image at `/models`, read-only. Prepackage
-the weights so startup does not need a download. Provide a writable `emptyDir`
+the model image's root and mount that image at `/models`, read-only. Follow
+`services/Dockerfile.tagger-model`: download and extract the weights in a curl
+builder stage, then copy only the model directories into `FROM scratch AS final`.
+Prepackage the weights so startup does not need a download. Provide a writable `emptyDir`
 at `/tmp`. Start with a 1 GiB memory request and 3 GiB limit, then measure usage.
 
 Once the local source and templates exist, add these entries to the existing
@@ -215,7 +217,14 @@ curl http://localhost:8085/api/insightface/similar \
 The base Compose PostgreSQL image provides PostGIS but does not provision
 pgvector. For a fully local implementation, supply a PostgreSQL image with both
 extensions and a Compose override for the worker. The Kubernetes setup already
-provides both extensions. Keep exercise builds out of the default CI pipeline
+provides both extensions. In that override, give the model build service a
+`build` profile, an explicit image name such as `lolcatz-insightface-model:local`,
+and `build.target: final`. Build it explicitly before starting the worker, and
+mount that image using a read-only `type: image` volume at `/models`, following
+the tagger's Compose configuration. The model image contains no executable and
+must not be started as an initializer container.
+
+Keep exercise builds out of the default CI pipeline
 while their source remains ignored.
 
 ## Acceptance criteria

@@ -63,17 +63,25 @@ build:
 
 # Inherit the selected kubeconfig context and its namespace.
 # Leave release and port-forward namespaces unset.
-deploy:
+manifests:
   helm:
     releases:
       - name: lolcatz
         chartPath: chart
+        skipTests: true
         setValues:
           imageRegistry: ""
         # Helm test hooks and image volumes are outside automatic image replacement.
         setValueTemplates:
           frontend.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_frontend}}"
           taggerModel.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_tagger_model}}"
+
+deploy:
+  kubectl:
+    flags:
+      # Keep labeled chart resources when Skaffold cleans up.
+      delete:
+        - --selector=skaffold.dev/keep!=true
 
 portForward:
   - resourceType: service

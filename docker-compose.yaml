@@ -370,16 +370,12 @@ services:
 
   tagger-model:
     profiles:
-      - ai
+      - build
+    image: lolcatz-tagger-model:local
     build:
       context: .
       dockerfile: services/Dockerfile.tagger-model
-    command:
-      - cp
-      - /yolov8n.pt
-      - /models/yolov8n.pt
-    volumes:
-      - tagger_model:/models
+      target: final
 
   tagger:
     profiles:
@@ -387,12 +383,13 @@ services:
     depends_on:
       schema-init:
         condition: service_completed_successfully
-      tagger-model:
-        condition: service_completed_successfully
       redpanda:
         condition: service_healthy
     volumes:
-      - tagger_model:/models:ro
+      - type: image
+        source: lolcatz-tagger-model:local
+        target: /models
+        read_only: true
     build:
       context: .
       dockerfile: services/Dockerfile.tagger
@@ -518,7 +515,6 @@ services:
       - /tmp
 
 volumes:
-  tagger_model:
   postgres_data:
   minio_data:
   redis_data:
