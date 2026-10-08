@@ -206,25 +206,12 @@ browser viewing an image sees updated totals without refreshing.
    | `oidc-client-lolcatz-frontend-owner-secrets` | `OIDC_IDP_URI` | the OIDC issuer, for token signature and `iss` checks |
    | `oidc-client-lolcatz-frontend-owner-secrets` | `OIDC_CLIENT_ORIGIN` | the public origin; the access token audience is this plus `/api` |
 
-   Pods must satisfy the namespace's `restricted` Pod Security Standard. The
-   images in this repository have no `USER`, so the pod picks the user:
-
-   ```yaml
-   spec:
-     securityContext:
-       runAsNonRoot: true
-       runAsUser: 65534
-       runAsGroup: 65534
-       seccompProfile:
-         type: RuntimeDefault
-     containers:
-       - name: voting
-         securityContext:
-           readOnlyRootFilesystem: true
-           allowPrivilegeEscalation: false
-           capabilities:
-             drop: ["ALL"]
-   ```
+   Do not add a `securityContext` for the namespace's `restricted` Pod
+   Security Standard: the platform's admission policies set seccomp, dropped
+   capabilities, `allowPrivilegeEscalation` and user-namespace isolation on
+   every pod, so the image may even run as root inside its user namespace.
+   Set only `readOnlyRootFilesystem: true` on the container, as the other
+   services do, and write to an `emptyDir` mounted at `/tmp`.
 
 5. Add the voting image to `skaffold.yaml`. Keep its image name short, such as
    `lolcatz-voting`; Skaffold prefixes it with `SKAFFOLD_DEFAULT_REPO`.
