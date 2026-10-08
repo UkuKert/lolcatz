@@ -71,11 +71,8 @@ manifests:
         skipTests: true
         setValues:
           imageRegistry: ""
-          imagePullSecrets[0].name: registry-pull
         # Helm test hooks and image volumes are outside automatic image replacement.
         setValueTemplates:
-          domain: "{{.LOLCATZ_DOMAIN}}"
-          storage.existingPolicy: "{{.LOLCATZ_STORAGE_POLICY}}"
           frontend.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_frontend}}"
           taggerModel.image: "{{.IMAGE_FULLY_QUALIFIED_lolcatz_tagger_model}}"
 

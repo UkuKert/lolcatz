@@ -65,17 +65,19 @@ browser viewing an image sees updated totals without refreshing.
    SKAFFOLD_KUBE_CONTEXT=<sandbox-context>
    SKAFFOLD_NAMESPACE=<sandbox-namespace>
    SKAFFOLD_DEFAULT_REPO=<registry-host>
-   LOLCATZ_STORAGE_POLICY=<sandbox-id>-rw
-   LOLCATZ_DOMAIN=lolcatz.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io
    ```
 
-   Use the registry host shown by Driftmower, for example
-   `registry.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io`. Do not append
-   the namespace to it. Use the existing S3 policy shown by Driftmower; sandbox
-   users cannot create their own S3 policies. The application hostname must end
-   in your full sandbox namespace. Skaffold automatically reads `skaffold.env`;
+   Copy the registry host from Driftmower's
+   [Provisioning → Container registry](https://driftmower.aws-us-west-2-bravo.codemowers.io/provisioning#registry)
+   section; it is `registry.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io`.
+   Do not append anything to it. Skaffold reads `skaffold.env` automatically;
    other shell commands do not. Never commit `skaffold.env` or registry
    credentials.
+
+   Nothing else is sandbox-specific. The chart's hostnames are short names
+   such as `can-i-haz-kubernetes`; an admission policy expands them to
+   `<name>.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io` and
+   cert-manager issues their certificates from the Ingress.
 
 2. Load the same values into the current shell when running the remaining setup
    commands:
@@ -87,20 +89,11 @@ browser viewing an image sees updated totals without refreshing.
    ```
 
 
-## TODO Everything below this is unvalidated AI slop. Double check, before merging
-3. Log Docker in to the sandbox registry using its pre-provisioned robot
-   credential:
-
-   ```bash
-   kubectl --context "$SKAFFOLD_KUBE_CONTEXT" \
-     --namespace "$SKAFFOLD_NAMESPACE" \
-     get secret registry-robot -o jsonpath='{.data.password}' | base64 -d | \
-     docker login "$SKAFFOLD_DEFAULT_REPO" \
-       --username "$(kubectl --context "$SKAFFOLD_KUBE_CONTEXT" \
-         --namespace "$SKAFFOLD_NAMESPACE" \
-         get secret registry-robot -o jsonpath='{.data.username}' | base64 -d)" \
-       --password-stdin
-   ```
+3. Log Docker in to the sandbox registry. Paste the `docker login` line from
+   the same
+   [Provisioning → Container registry](https://driftmower.aws-us-west-2-bravo.codemowers.io/provisioning#registry)
+   section; it carries the sandbox's robot credential. Expect
+   **Login Succeeded**.
 
 4. Validate the generated manifests before changing the cluster:
 
@@ -123,8 +116,18 @@ browser viewing an image sees updated totals without refreshing.
 
    Skaffold builds the images, pushes them to the sandbox registry, deploys the
    Helm chart, tails logs, and rebuilds changed services. Keep it running while
-   working. Open `https://lolcatz.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io`.
-   Use Skaffold's port-forwards only to debug individual services.
+   working. Use Skaffold's port-forwards only to debug individual services.
+
+   Open the application at the hostname the Ingress resolved to:
+
+   ```bash
+   kubectl --context "$SKAFFOLD_KUBE_CONTEXT" \
+     --namespace "$SKAFFOLD_NAMESPACE" \
+     get ingress lolcatz-frontend -o jsonpath='https://{.spec.rules[0].host}{"\n"}'
+   ```
+
+   The first page load can take a minute while Let's Encrypt issues the
+   certificate.
 
 6. In another terminal, load `skaffold.env` and inspect the deployment:
 
@@ -191,20 +194,33 @@ browser viewing an image sees updated totals without refreshing.
    {"image_id":"01JABC123","up":12,"down":3}
    ```
 
-4. Add `GET /api/voting/healthz`, the Python dependencies, a non-root Docker
-   image, and the voting service's Deployment and Service. Pass PostgreSQL and
-   OIDC settings from operator-managed resources; do not hardcode credentials
-   or the issuer. Pods must satisfy the restricted security policy:
+4. Add `GET /api/voting/healthz`, the Python dependencies, a Docker image,
+   and the voting service's Deployment and Service. Take PostgreSQL and OIDC
+   settings from the Secrets the operators already provision in the
+   namespace, as the other services do; do not hardcode credentials or the
+   issuer:
+
+   | Secret | Key | Holds |
+   |---|---|---|
+   | `lolcatz-database-app` | `uri` | PostgreSQL connection URL (CloudNativePG) |
+   | `oidc-client-lolcatz-frontend-owner-secrets` | `OIDC_IDP_URI` | the OIDC issuer, for token signature and `iss` checks |
+   | `oidc-client-lolcatz-frontend-owner-secrets` | `OIDC_CLIENT_ORIGIN` | the public origin; the access token audience is this plus `/api` |
+
+   Pods must satisfy the namespace's `restricted` Pod Security Standard. The
+   images in this repository have no `USER`, so the pod picks the user:
 
    ```yaml
    spec:
      securityContext:
        runAsNonRoot: true
+       runAsUser: 65534
+       runAsGroup: 65534
        seccompProfile:
          type: RuntimeDefault
      containers:
        - name: voting
          securityContext:
+           readOnlyRootFilesystem: true
            allowPrivilegeEscalation: false
            capabilities:
              drop: ["ALL"]
@@ -226,21 +242,24 @@ browser viewing an image sees updated totals without refreshing.
    - publisher credentials in a Secret;
    - authorization that permits anonymous subscription to
      `lolcatz/images/+/votes` but denies anonymous publication; and
-   - a standard `networking.k8s.io/v1` Ingress and certificate for
-     `mqtt.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io`.
+   - a standard `networking.k8s.io/v1` Ingress with the short host `mqtt`,
+     routing `/mqtt` to the listener Service.
 
-   Set `ingressClassName: traefik`. Route `/mqtt` to EMQX and terminate TLS at the
-   Ingress. Sandboxes reject Traefik `IngressRoute` resources and wildcard
-   certificates.
+   TLS terminates at the Ingress. Nothing else is needed: Traefik is the
+   default ingress class, the admission policy expands `mqtt` to
+   `mqtt.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io`, and
+   cert-manager issues the certificate from the Ingress. Sandboxes reject
+   Traefik `IngressRoute` resources and wildcard certificates.
 
 8. After a successful commit, publish the new totals to
    `lolcatz/images/{image_id}/votes` with QoS 1 and `retain=true`. PostgreSQL is
    authoritative; MQTT is only the notification channel.
 
 9. Add the vote buttons and MQTT.js client to the frontend. Connect to
-   `wss://mqtt.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io/mqtt`,
-   subscribe only to the displayed image's topic, and fall back to the HTTP GET
-   endpoint after connection or decoding failures.
+   `wss://mqtt.<sandbox-namespace>.aws-us-west-2-bravo.codemowers.io/mqtt`
+   (`kubectl get ingress` shows the resolved host), subscribe only to the
+   displayed image's topic, and fall back to the HTTP GET endpoint after
+   connection or decoding failures.
 
 10. Follow the existing direct OAuth pattern: NextAuth owns login and renewal,
    the browser sends its access token directly to the voting API, and the API
@@ -284,10 +303,13 @@ browser viewing an image sees updated totals without refreshing.
      --namespace "$SKAFFOLD_NAMESPACE" get ingress
    ```
 
-3. Check the public endpoints. Replace the values before running the commands:
+3. Check the public endpoints. Replace the image ID before running the
+   commands:
 
    ```bash
-   export APP_HOST="$LOLCATZ_DOMAIN"
+   export APP_HOST="$(kubectl --context "$SKAFFOLD_KUBE_CONTEXT" \
+     --namespace "$SKAFFOLD_NAMESPACE" \
+     get ingress lolcatz-frontend -o jsonpath='{.spec.rules[0].host}')"
    export IMAGE_ID='<existing-image-id>'
 
    curl --fail-with-body "https://${APP_HOST}/api/voting/healthz"
